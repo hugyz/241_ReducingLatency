@@ -188,7 +188,7 @@ class Client:
                 payload={
                     "tick": self.tick,
                     "state": {"x": self.x, "y": self.y},
-                    "input": {"dx": dx, "dy": dy, "buttons": []},
+                    "input": {"dx": dx, "dy": dy},
                 },
             )
 

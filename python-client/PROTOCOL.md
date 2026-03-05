@@ -31,8 +31,8 @@ All messages follow the same structure.
 |------|-------------|
 | type | Message type |
 | client_id | Client identifier |
-| seq | Sequence number |
-| timestamp_ms | Sender timestamp |
+| seq | Sequence number used to match request/response messages |
+| timestamp_ms | Sender timestamp (ms since epoch) |
 | payload | Message-specific data |
 
 ---
@@ -41,25 +41,61 @@ All messages follow the same structure.
 
 | Type | Direction | Purpose |
 |-----|-----------|--------|
-| PING | Client → Edge | Measure latency |
-| PONG | Edge → Client | Reply to PING |
+| PING | Client → Main/Edge | Measure latency |
+| PONG | Main/Edge → Client | Reply to PING |
 | DISCOVER | Client → Main | Request edge servers |
 | EDGE_LIST | Main → Client | Return available edges |
-| REGISTER | Client → Edge | Register with chosen edge |
-| PREDICTION | Client → Edge | Periodic client state update |
-| STATE_UPDATE | Edge → Client | Authoritative state update |
-| ROLLBACK | Edge → Client | Correct client state |
+| REGISTER | Client → Main/Edge | Register with chosen edge |
+| PREDICTION | Client → Main/Edge | Periodic client state update |
+| STATE_UPDATE | Main/Edge → Client | Authoritative state update |
+| ROLLBACK | Main/Edge → Client | Correct client state |
 
 ---
 
-# Example Messages
+# Message Payload Definitions
 
-### PING
+### PING (Client → Main/Edge)
+
+Used to measure latency.
+
+Payload:
 ```json
 {}
 ```
 
-### EDGE_LIST
+The server must reply with a `PONG` containing the same `seq`.
+
+---
+
+### PONG (Main/Edge → Client)
+
+Reply to a `PING`.
+
+Payload:
+```json
+{}
+```
+
+The `seq` must match the original `PING`.
+
+---
+
+### DISCOVER (Client → Main)
+
+Client requests available edge servers.
+
+Payload:
+```json
+{}
+```
+
+---
+
+### EDGE_LIST (Main → Client)
+
+Returns a list of available edge servers.
+
+Payload:
 ```json
 {
   "edges": [
@@ -69,14 +105,107 @@ All messages follow the same structure.
 }
 ```
 
-### PREDICTION
+| Field | Type | Description |
+|------|------|-------------|
+| edges | list | List of available edge servers |
+| host | string | Server hostname or IP |
+| port | integer | UDP port of the server |
+
+---
+
+### REGISTER (Client → Main/Edge)
+
+Client registers with the selected server.
+
+Payload:
+```json
+{
+  "chosen_edge": "127.0.0.1:9000"
+}
+```
+
+| Field | Type | Description |
+|------|------|-------------|
+| chosen_edge | string | Address of the selected server |
+
+---
+
+### PREDICTION (Client → Main/Edge)
+
+Periodic client update containing predicted movement and state.
+
+Payload:
 ```json
 {
   "tick": 123,
-  "state": {"x": 1.2, "y": -3.4},
-  "input": {"dx": 1, "dy": 0}
+  "state": {
+    "x": 1.2,
+    "y": -3.4
+  },
+  "input": {
+    "dx": 1,
+    "dy": 0
+  }
 }
 ```
+
+| Field | Type | Description |
+|------|------|-------------|
+| tick | integer | Client simulation tick |
+| state.x | float | Predicted X position |
+| state.y | float | Predicted Y position |
+| input.dx | integer | X movement input (-1, 0, 1) |
+| input.dy | integer | Y movement input (-1, 0, 1) |
+
+---
+
+### STATE_UPDATE (Main/Edge → Client)
+
+Server sends authoritative state update.
+
+Payload:
+```json
+{
+  "server_tick": 540,
+  "sent_timestamp_ms": 1710000000500,
+  "authoritative": {
+    "x": 1.1,
+    "y": -3.2
+  }
+}
+```
+
+| Field | Type | Description |
+|------|------|-------------|
+| server_tick | integer | Server simulation tick |
+| sent_timestamp_ms | integer | Time when server sent the message |
+| authoritative.x | float | Authoritative X position |
+| authoritative.y | float | Authoritative Y position |
+
+---
+
+### ROLLBACK (Main/Edge → Client)
+
+Server instructs the client to correct its predicted state.
+
+Payload:
+```json
+{
+  "server_tick": 540,
+  "sent_timestamp_ms": 1710000000500,
+  "authoritative": {
+    "x": 1.1,
+    "y": -3.2
+  }
+}
+```
+
+| Field | Type | Description |
+|------|------|-------------|
+| server_tick | integer | Server simulation tick |
+| sent_timestamp_ms | integer | Time when server sent the message |
+| authoritative.x | float | Correct X position |
+| authoritative.y | float | Correct Y position |
 
 ---
 
@@ -92,7 +221,7 @@ Client sends multiple `PING` probes and chooses the edge with the lowest median 
 
 3. **Register**
 
-Client sends `REGISTER` to the selected edge server.
+Client sends `REGISTER` to the selected server.
 
 4. **Run**
 
@@ -126,6 +255,12 @@ Latency is measured using **RTT (Round Trip Time)** via `PING/PONG`.
 RTT = time(PONG received) − time(PING sent)
 ```
 
+Server messages may include `sent_timestamp_ms`, allowing clients or visualization tools to measure server → client delay:
+
+```
+delay = receive_time_ms − sent_timestamp_ms
+```
+
 ---
 
 # Server Requirements
@@ -133,6 +268,7 @@ RTT = time(PONG received) − time(PING sent)
 ### Main Server
 - Handle `DISCOVER`
 - Return `EDGE_LIST`
+- May also process client updates directly (same responsibilities as edge server)
 
 ### Edge Server
 - Reply to `PING` with `PONG`
