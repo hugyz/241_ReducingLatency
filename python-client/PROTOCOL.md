@@ -168,6 +168,8 @@ Payload:
 {
   "server_tick": 540,
   "sent_timestamp_ms": 1710000000500,
+  "source_client_id": "c3",
+  "origin_timestamp_ms": 1710000000000,
   "authoritative": {
     "x": 1.1,
     "y": -3.2
@@ -179,6 +181,8 @@ Payload:
 |------|------|-------------|
 | server_tick | integer | Server simulation tick |
 | sent_timestamp_ms | integer | Time when server sent the message |
+| source_client_id | string | Original sender of the forwarded update |
+| origin_timestamp_ms | integer | Original sender timestamp preserved by the server |
 | authoritative.x | float | Authoritative X position |
 | authoritative.y | float | Authoritative Y position |
 
@@ -235,13 +239,13 @@ Clients send updates at a fixed tick rate.
 
 Default:
 
-```
+```text
 30 ticks/sec
 ```
 
 This means a prediction update is sent every:
 
-```
+```text
 ~33 ms
 ```
 
@@ -275,3 +279,83 @@ delay = receive_time_ms − sent_timestamp_ms
 - Accept `REGISTER`
 - Receive `PREDICTION`
 - Optionally send `STATE_UPDATE` or `ROLLBACK`
+
+
+---
+
+# Running Multiple Clients
+
+The `run_clients.py` script launches multiple client instances for experiments.
+
+Example:
+
+python3 run_clients.py --n 20 --main 127.0.0.1:8000 --duration 30
+
+Options:
+- --n: number of clients
+- --duration: experiment runtime in seconds
+- --stagger-ms: delay between launching clients
+- --use-discovery: use main server discovery
+
+---
+
+# Logging
+
+Clients log important events to stdout. When running experiments with `run_clients.py`, the output from each client is captured and written to separate log files.
+
+Each client log file is stored in `logs/<client_id>.log`.
+
+Example:
+- `logs/c0.log`
+- `logs/c1.log`
+
+---
+
+## Endpoint Selection Logging
+
+When a client selects an endpoint, it logs the measured RTT values and the chosen server.
+
+Example:
+
+    [client] ping results:
+      ('127.0.0.1', 9000) rtts=[...] median=6.62ms
+      ('127.0.0.1', 9001) rtts=[...] median=209.83ms
+
+    [client] selected edge ('127.0.0.1', 9000) (median=6.62ms)
+
+This confirms that clients are selecting the lowest-latency endpoint.
+
+---
+
+## Player-to-Player Latency Logging
+
+When a client receives an update forwarded by the server, it computes the end-to-end latency between the original sender and the receiving client.
+
+Latency is computed as:
+
+    latency_ms = receive_time_ms - origin_timestamp_ms
+
+Example log entry:
+
+    [client] FORWARDED_UPDATE source=c3 dest=c7 latency_ms=46
+
+Fields:
+- `source`: original sender
+- `dest`: receiving client
+- `latency_ms`: measured end-to-end latency
+
+These logs are used to compute **mean worst connection time**.
+
+---
+
+## Multi-Client Experiment Logging
+
+The `run_clients.py` script launches multiple client instances and captures their output into log files.
+
+Example:
+
+    python3 run_clients.py --n 20 --main 127.0.0.1:8000 --duration 30
+
+Each client’s output is written to `logs/<client_id>.log`.
+
+These logs can later be processed to analyze latency across all clients in the session.

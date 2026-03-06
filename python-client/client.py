@@ -18,11 +18,10 @@ def parse_addr(s: str) -> Addr:
 
 
 class Client:
-    def __init__(self, client_id: str, main_server: Addr, tick_rate: float = 30.0):
-        # current tick rate default 30 ticks per second
+    def __init__(self, client_id: str, main_server: Addr):
         self.client_id = client_id
         self.main_server = main_server
-        self.tick_rate = tick_rate
+        self.tick_rate = 30 # current tick rate default 30 ticks per second
 
         self.transport = UdpTransport(bind_port=0)
         self.server: Addr | None = None  # chosen edge
@@ -195,10 +194,23 @@ class Client:
             assert self.server is not None
             self.transport.send(pred, self.server)
 
-    # incoming handlers
+   # incoming handlers
     def on_state_update(self, msg: dict, addr: Addr) -> None:
-        print(f"[client] STATE_UPDATE from {addr}: {msg}")
+        now_ms = int(time.time() * 1000)
 
+        payload = msg.get("payload", {})
+
+        origin_ts = payload.get("origin_timestamp_ms")
+        source_id = payload.get("source_client_id")
+
+        if origin_ts is not None and source_id is not None:
+            latency_ms = now_ms - origin_ts
+
+        print(
+            f"[client] FORWARDED_UPDATE source={source_id} "
+            f"dest={self.client_id} latency_ms={latency_ms}" # type: ignore
+        )
+    
     def on_rollback(self, msg: dict, addr: Addr) -> None:
         print(f"[client] ROLLBACK from {addr}: {msg}")
         auth = msg.get("payload", {}).get("authoritative")
@@ -211,15 +223,14 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--client-id", default="c1")
     ap.add_argument("--main", default="127.0.0.1:8000", help="main server host:port for discovery")
-    ap.add_argument("--tick_rate", type=float, default=30.0)
-    ap.add_argument(
+    ap.add_argument( # remove later
         "--use-discovery",
         action="store_true",
         help="Use real DISCOVER/EDGE_LIST from main server (instead of dummy list).",
     )
     args = ap.parse_args()
 
-    c = Client(args.client_id, parse_addr(args.main), tick_rate=args.tick_rate)
+    c = Client(args.client_id, parse_addr(args.main))
     c.run(use_discovery=args.use_discovery)
 
     print("[client] running. Ctrl+C to stop.")
