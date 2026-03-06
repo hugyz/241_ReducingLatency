@@ -35,7 +35,9 @@ class Client:
         self.y = 0.0
 
         # handlers for incoming server messages (for later integration)
-        self.transport.on(MessageType.STATE_UPDATE.value, self.on_state_update)
+        self.transport.on(MessageType.PREDICTION.value, self.on_prediction)
+        # do later if needed
+        # self.transport.on(MessageType.STATE_UPDATE.value, self.on_state_update)
         self.transport.on(MessageType.ROLLBACK.value, self.on_rollback)
        
     # Simulated EDGE_LIST (delete when integrated with go server)
@@ -194,17 +196,21 @@ class Client:
             assert self.server is not None
             self.transport.send(pred, self.server)
 
-   # incoming handlers
-    def on_state_update(self, msg: dict, addr: Addr) -> None:
+    # incoming handlers
+    def on_prediction(self, msg: dict, addr: Addr) -> None:
         now_ms = int(time.time() * 1000)
 
         payload = msg.get("payload", {})
 
-        origin_ts = payload.get("origin_timestamp_ms")
-        source_id = payload.get("source_client_id")
+        source_id = msg.get("client_id")
+        send_ts = msg.get("timestamp_ms")
 
-        if origin_ts is not None and source_id is not None:
-            latency_ms = now_ms - origin_ts
+        if source_id is None or send_ts is None:
+            return
+        if source_id == self.client_id:
+            return
+
+        latency_ms = now_ms - send_ts
 
         print(
             f"[client] FORWARDED_UPDATE source={source_id} "

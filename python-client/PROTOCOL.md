@@ -47,8 +47,8 @@ All messages follow the same structure.
 | EDGE_LIST | Main → Client | Return available edges |
 | REGISTER | Client → Main/Edge | Register with chosen edge |
 | PREDICTION | Client → Main/Edge | Periodic client state update |
-| STATE_UPDATE | Main/Edge → Client | Authoritative state update |
-| ROLLBACK | Main/Edge → Client | Correct client state |
+| STATE_UPDATE | Main → Client | Authoritative state update |
+| ROLLBACK | Main → Client | Correct client state |
 
 ---
 
