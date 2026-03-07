@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -10,165 +11,216 @@ import (
 	"time"
 )
 
-// Client represents a paired connection between a remote device and the target host.
-type Client struct {
-	ce   *net.TCPConn // client <-> edge
-	eh   *net.TCPConn // edge <-> host
-	addr string
+// ─── Protocol types (mirrors python-client/protocol.py) ──────────────────────
+
+type Message struct {
+	Type        string         `json:"type"`
+	ClientID    string         `json:"client_id"`
+	Seq         int            `json:"seq"`
+	TimestampMs int64          `json:"timestamp_ms"`
+	Payload     map[string]any `json:"payload"`
 }
 
-// Global map to track active clients for broadcasting.
-var clients sync.Map
+const (
+	MsgPing        = "PING"
+	MsgPong        = "PONG"
+	MsgDiscover    = "DISCOVER"
+	MsgEdgeList    = "EDGE_LIST"
+	MsgRegister    = "REGISTER"
+	MsgPrediction  = "PREDICTION"
+	MsgStateUpdate = "STATE_UPDATE"
+	MsgRollback    = "ROLLBACK"
+)
 
-// GetExtarnalIPv4 finds non-loopback IPv4 addresses on the local machine.
-func GetExtarnalIPv4() []string {
-	var ips []string
-	addrs, _ := net.InterfaceAddrs()
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.To4() != nil && !ipnet.IP.IsLoopback() {
-			ips = append(ips, ipnet.IP.String())
+func nowMs() int64 {
+	return time.Now().UnixMilli()
+}
+
+func encode(msg Message) ([]byte, error) {
+	return json.Marshal(msg)
+}
+
+func decode(data []byte) (Message, error) {
+	var msg Message
+	err := json.Unmarshal(data, &msg)
+	return msg, err
+}
+
+// ─── Client registry ──────────────────────────────────────────────────────────
+
+type ClientInfo struct {
+	addr *net.UDPAddr
+	id   string
+}
+
+var (
+	clientsMu sync.RWMutex
+	// key: client_id → ClientInfo
+	clientsByID = make(map[string]*ClientInfo)
+)
+
+func registerClient(id string, addr *net.UDPAddr) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	clientsByID[id] = &ClientInfo{addr: addr, id: id}
+	fmt.Printf("[edge] registered client %q at %s\n", id, addr)
+}
+
+func unregisterClient(id string) {
+	clientsMu.Lock()
+	defer clientsMu.Unlock()
+	delete(clientsByID, id)
+}
+
+// broadcast sends data to all registered clients except the sender.
+func broadcast(conn *net.UDPConn, senderID string, data []byte, delay time.Duration) {
+	clientsMu.RLock()
+	targets := make([]*ClientInfo, 0, len(clientsByID))
+	for id, c := range clientsByID {
+		if id != senderID {
+			targets = append(targets, c)
 		}
 	}
-	return ips
-}
+	clientsMu.RUnlock()
 
-// GetTCPListener attempts to bind a TCP listener to an external IP on an ephemeral port.
-func GetTCPListener() (*net.TCPListener, error) {
-	for _, ip := range GetExtarnalIPv4() {
-		if addr, err := net.ResolveTCPAddr("tcp4", ip+":0"); err == nil {
-			if listener, err := net.ListenTCP("tcp4", addr); err == nil {
-				return listener, nil
-			}
+	for _, c := range targets {
+		target := c // capture
+		if delay > 0 {
+			time.AfterFunc(delay, func() {
+				conn.WriteToUDP(data, target.addr)
+			})
+		} else {
+			conn.WriteToUDP(data, target.addr)
 		}
 	}
-	return nil, fmt.Errorf("no external IP found")
 }
 
-// handleClient manages the bidirectional data flow and broadcast logic for a single client.
-func handleClient(client *Client, delay time.Duration) {
-	defer client.ce.Close()
-	defer client.eh.Close()
-	defer clients.Delete(client.addr)
-
-	// Channel to signal if either side of the proxy closes.
-	done := make(chan bool, 2)
-
-	// 1. Client -> Edge -> (Broadcast to Peers + Delayed Host)
-	go func() {
-		buf := make([]byte, 4096) // Fixed syntax: []byte instead of byte[]
-		for {
-			n, err := client.ce.Read(buf)
-			if err != nil {
-				done <- true
-				return
-			}
-
-			// Create a copy of the data because buf will be reused in the next iteration.
-			data := make([]byte, n)
-			copy(data, buf[:n])
-
-			// Broadcast to other clients immediately.
-			broadcast(client.addr, data)
-
-			// Send to Host after M ms delay.
-			time.AfterFunc(delay, func() {
-				client.eh.Write(data)
-			})
-		}
-	}()
-
-	// 2. Host -> Edge -> Delayed Client
-	go func() {
-		buf := make([]byte, 4096) // Fixed syntax: []byte instead of byte[]
-		for {
-			n, err := client.eh.Read(buf)
-			if err != nil {
-				done <- true
-				return
-			}
-
-			data := make([]byte, n)
-			copy(data, buf[:n])
-
-			// Send back to this specific client after M ms delay.
-			time.AfterFunc(delay, func() {
-				client.ce.Write(data)
-			})
-		}
-	}()
-
-	<-done
-	fmt.Printf("Connection closed for %s\n", client.addr)
+// send sends a message to a specific address, with optional delay.
+func send(conn *net.UDPConn, msg Message, addr *net.UDPAddr, delay time.Duration) {
+	data, err := encode(msg)
+	if err != nil {
+		log.Printf("[edge] encode error: %v", err)
+		return
+	}
+	if delay > 0 {
+		time.AfterFunc(delay, func() {
+			conn.WriteToUDP(data, addr)
+		})
+	} else {
+		conn.WriteToUDP(data, addr)
+	}
 }
 
-// broadcast sends the provided data to every client except the sender.
-func broadcast(senderAddr string, data []byte) {
-	clients.Range(func(key, value interface{}) bool {
-		targetAddr := key.(string)
-		client := value.(*Client)
-
-		if targetAddr != senderAddr {
-			// We write directly here; if the client's buffer is full,
-			// this could block. In a production environment, you might
-			// use a per-client egress channel.
-			client.ce.Write(data)
-		}
-		return true
-	})
-}
+// ─── Main server (also acts as edge node) ─────────────────────────────────────
+// Usage: ./edge <name> <delay_ms>
+// The server listens on 0.0.0.0:8000 by default.
+// Pass --port <n> as optional 3rd arg to override.
 
 func main() {
-	if len(os.Args) != 4 {
-		log.Fatal("Usage: <name> <host_addr> <delay_ms>")
+	if len(os.Args) < 3 {
+		log.Fatal("Usage: ./edge <name> <delay_ms> [port]")
 	}
 
 	name := os.Args[1]
-	hostAddrStr := os.Args[2]
-
-	// Parse M (delay in milliseconds) from command line.
-	delayInt, err := strconv.Atoi(os.Args[3])
+	delayInt, err := strconv.Atoi(os.Args[2])
 	if err != nil {
-		log.Fatalf("Invalid delay value: %v", err)
+		log.Fatalf("invalid delay: %v", err)
 	}
 	delay := time.Duration(delayInt) * time.Millisecond
 
-	listener, err := GetTCPListener()
-	if err != nil {
-		log.Panic(err)
-	}
-	fmt.Printf("%s listening on %s\n", name, listener.Addr())
-
-	hostAddr, err := net.ResolveTCPAddr("tcp4", hostAddrStr)
-	if err != nil {
-		log.Panic(err)
+	port := 8000
+	if len(os.Args) >= 4 {
+		port, err = strconv.Atoi(os.Args[3])
+		if err != nil {
+			log.Fatalf("invalid port: %v", err)
+		}
 	}
 
+	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("0.0.0.0:%d", port))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	conn, err := net.ListenUDP("udp4", addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	fmt.Printf("[%s] UDP edge node listening on %s (delay=%dms)\n", name, conn.LocalAddr(), delayInt)
+
+	buf := make([]byte, 65535)
 	for {
-		// Accept incoming client connection.
-		ce, err := listener.AcceptTCP()
+		n, remoteAddr, err := conn.ReadFromUDP(buf)
 		if err != nil {
-			fmt.Printf("Accept error: %v\n", err)
+			log.Printf("[%s] read error: %v", name, err)
 			continue
 		}
 
-		fmt.Printf("Got connection from %s\n", ce.RemoteAddr())
+		data := make([]byte, n)
+		copy(data, buf[:n])
 
-		// Establish a unique connection to the host for this specific client.
-		eh, err := net.DialTCP("tcp4", nil, hostAddr)
-		if err != nil {
-			fmt.Printf("Could not connect to host for client %s: %v\n", ce.RemoteAddr(), err)
-			ce.Close()
-			continue
+		go handleMessage(conn, remoteAddr, data, delay)
+	}
+}
+
+func handleMessage(conn *net.UDPConn, addr *net.UDPAddr, data []byte, delay time.Duration) {
+	msg, err := decode(data)
+	if err != nil {
+		log.Printf("[edge] decode error from %s: %v", addr, err)
+		return
+	}
+
+	switch msg.Type {
+
+	// ── PING → reply PONG immediately (no delay, so ping measurement is accurate) ──
+	case MsgPing:
+		pong := Message{
+			Type:        MsgPong,
+			ClientID:    msg.ClientID,
+			Seq:         msg.Seq,
+			TimestampMs: nowMs(),
+			Payload:     map[string]any{},
+		}
+		send(conn, pong, addr, 0)
+
+	// ── DISCOVER → return edge list (just ourselves for now) ──
+	case MsgDiscover:
+		// For a single-node setup we return our own address as the only edge.
+		// In a multi-node setup you would maintain a list of known peer edges.
+		localAddr := conn.LocalAddr().(*net.UDPAddr)
+		edgeList := Message{
+			Type:        MsgEdgeList,
+			ClientID:    msg.ClientID,
+			Seq:         msg.Seq,
+			TimestampMs: nowMs(),
+			Payload: map[string]any{
+				"edges": []map[string]any{
+					{"host": "127.0.0.1", "port": localAddr.Port},
+				},
+				"ttl_ms": 10000,
+			},
+		}
+		send(conn, edgeList, addr, 0)
+
+	// ── REGISTER → store client mapping ──
+	case MsgRegister:
+		registerClient(msg.ClientID, addr)
+
+	// ── PREDICTION → broadcast to all other clients (with delay), forward to host ──
+	case MsgPrediction:
+		// Make sure this client is registered (re-register if needed)
+		clientsMu.RLock()
+		_, known := clientsByID[msg.ClientID]
+		clientsMu.RUnlock()
+		if !known {
+			registerClient(msg.ClientID, addr)
 		}
 
-		client := &Client{
-			ce:   ce,
-			eh:   eh,
-			addr: ce.RemoteAddr().String(),
-		}
+		// Broadcast raw bytes to all peers with simulated delay.
+		broadcast(conn, msg.ClientID, data, delay)
 
-		// Store client in the map and start processing.
-		clients.Store(client.addr, client)
-		go handleClient(client, delay)
+	default:
+		log.Printf("[edge] unknown message type %q from %s", msg.Type, addr)
 	}
 }
