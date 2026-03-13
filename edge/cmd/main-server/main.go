@@ -157,7 +157,7 @@ func (s *MainServer) handleDiscover(msg *common.Message, addr *net.UDPAddr) {
 func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 	region, _ := common.GetString(msg.Payload, "region")
 
-	registeredTo := "main"
+	registeredTo := s.nodeName
 	if v, ok := common.GetString(msg.Payload, "registered_edge"); ok && v != "" {
 		registeredTo = v
 	}
@@ -169,7 +169,7 @@ func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 		Addr:       addr, // either client addr (registered to main) or edge addr 
 	}
 
-	if registeredTo != "main" {
+	if registeredTo != s.nodeName {
 		s.edges[registeredTo] = &edgeInfo{
 			NodeName: registeredTo,
 			Addr:     addr,
@@ -222,7 +222,7 @@ func (s *MainServer) broadcastPrediction(data []byte, senderClientID string) {
 		if clientID == senderClientID {
 			continue
 		}
-		if client.registeredTo != "main" {
+		if client.registeredTo != s.nodeName {
 			continue
 		}
 		if client.Addr == nil {
@@ -251,7 +251,7 @@ func (s *MainServer) broadcastPrediction(data []byte, senderClientID string) {
 		if clientID == senderClientID {
 			continue
 		}
-		if client.registeredTo == "main" {
+		if client.registeredTo == s.nodeName {
 			continue
 		}
 		if client.registeredTo == originAttachment {
