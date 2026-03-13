@@ -18,9 +18,10 @@ def parse_addr(s: str) -> Addr:
 
 
 class Client:
-    def __init__(self, client_id: str, main_server: Addr):
+    def __init__(self, client_id: str, region: str, main_server: Addr):
         self.client_id = client_id
         self.main_server = main_server
+        self.region = region
         self.tick_rate = 30 # current tick rate default 30 ticks per second
 
         self.transport = UdpTransport(bind_port=0)
@@ -96,7 +97,7 @@ class Client:
 
     # pick best endpoint with lowest median RTT
     def select_best_edge(self, edges: List[Addr]) -> Addr:
-        best, all_results = choose_best_endpoint(self.transport, edges, self.client_id, n=7)
+        best, all_results = choose_best_endpoint(self.transport, edges, self.client_id, self.region, n=7)
 
         print("[client] ping results:")
         for r in all_results:
@@ -116,6 +117,7 @@ class Client:
             seq,
             payload={
                 "chosen_edge": f"{self.server[0]}:{self.server[1]}",
+                "region": self.region,
             },
         )
         self.transport.send(reg, self.server)
@@ -228,6 +230,7 @@ class Client:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--client-id", default="c1")
+    ap.add_argument("--region", default="A")
     ap.add_argument("--main", default="127.0.0.1:8000", help="main server host:port for discovery")
     ap.add_argument( # remove later
         "--use-discovery",
@@ -236,7 +239,7 @@ def main():
     )
     args = ap.parse_args()
 
-    c = Client(args.client_id, parse_addr(args.main))
+    c = Client(args.client_id, args.region, parse_addr(args.main))
     c.run(use_discovery=args.use_discovery)
 
     print("[client] running. Ctrl+C to stop.")

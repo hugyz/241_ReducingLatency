@@ -1,14 +1,9 @@
-# Build both binaries
-all: build-edge
+MAIN=main-server
+EDGE=edge-server
 
-build-edge:
-	go build -o ./Edge ./main.go
+build:
+	go build -o $(MAIN) ./cmd/main-server
+	go build -o $(EDGE) ./cmd/edge-server
 
-# Clean up binaries
 clean:
-	touch ./Edge && rm ./Edge
-
-# Run specific apps
-run:
-	go run ./main.go
-
+	rm -f $(MAIN) $(EDGE)

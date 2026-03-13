@@ -115,6 +115,7 @@ def ping_endpoint(
     transport: UdpTransport,
     addr: Addr,
     client_id: str,
+    region: str,
     n: int = 10,
     timeout_s: float = 0.25,
     gap_s: float = 0.03,
@@ -131,7 +132,7 @@ def ping_endpoint(
 
     for _ in range(n):
         seq = transport.next_seq()
-        msg = create_message(MessageType.PING.value, client_id, seq, payload={})
+        msg = create_message(MessageType.PING.value, client_id, seq, payload={"region": region})
         t0 = time.time()
         transport.send(msg, addr)
 
@@ -154,11 +155,12 @@ def choose_best_endpoint(
     transport: UdpTransport,
     endpoints: List[Addr],
     client_id: str,
+    region: str,
     n: int = 7,
 ) -> Tuple[EndpointResult, List[EndpointResult]]:
     """
     Returns (best, all_results_sorted_by_latency)
     """
-    results = [ping_endpoint(transport, ep, client_id, n=n) for ep in endpoints]
+    results = [ping_endpoint(transport, ep, client_id, region, n=n) for ep in endpoints]
     results.sort(key=lambda r: r.median_ms)
     return results[0], results

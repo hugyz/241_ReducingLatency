@@ -60,8 +60,13 @@ Used to measure latency.
 
 Payload:
 ```json
-{}
+{
+  "region": "A"
+}
 ```
+| Field | Type | Description |
+|------|------|-------------|
+| region | string | Region of the client |
 
 The server must reply with a `PONG` containing the same `seq`.
 
@@ -120,13 +125,15 @@ Client registers with the selected server.
 Payload:
 ```json
 {
-  "chosen_edge": "127.0.0.1:9000"
+  "chosen_edge": "127.0.0.1:9000",
+  "region": "A"
 }
 ```
 
 | Field | Type | Description |
 |------|------|-------------|
 | chosen_edge | string | Address of the selected server |
+| region | string | Region of the client |
 
 ---
 
