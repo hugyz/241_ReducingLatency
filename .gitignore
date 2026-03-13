@@ -1,1 +1,17 @@
 edge/Edge
+```gitignore
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+main-server
+edge-server
+
+bin/
+build/
+dist/
