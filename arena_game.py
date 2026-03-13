@@ -46,6 +46,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="WARZONE multiplayer client")
     ap.add_argument("--client-id", default="p1", help="unique player id")
     ap.add_argument("--edge",      default="127.0.0.1:8000", help="edge node host:port")
+    ap.add_argument("--region", default="A", help="client region (A, B, etc) used for latency simulation")
     ap.add_argument("--color",     type=int, default=0, help="player color index 0-8")
     ap.add_argument("--map-seed",  type=int, default=12345, help="shared map seed (must match all players)")
     ap.add_argument("--terrain",   default="forest",
@@ -719,14 +720,19 @@ def draw_hud(player, fps, kills, total, elapsed, remote_players, net_latency_ms)
 #  NETWORK CLIENT  (wraps UdpTransport, runs in background thread)
 # ══════════════════════════════════════════════════════════════════════════════
 class NetworkClient:
-    def __init__(self, client_id, edge_addr):
+    def __init__(self, client_id, edge_addr, region):
         self.client_id  = client_id
-        self.edge_addr  = edge_addr           # (host, port)
+        self.edge_addr  = edge_addr   # (host, port)
+        self.edge_name = "main" # changed after discover/selection
+        self.region     = region
         self.transport  = UdpTransport(bind_port=0)
         self.server     = edge_addr
         self._seq       = 0
         self._seq_lock  = threading.Lock()
         self._running   = False
+        
+        self._discover_event = threading.Event()
+        self._edges = []
 
         # Shared state written by recv thread, read by game thread
         self._lock               = threading.Lock()
@@ -738,6 +744,7 @@ class NetworkClient:
         # Register handlers
         self.transport.on(MessageType.PREDICTION.value, self._on_prediction)
         self.transport.on(MessageType.PONG.value,       self._on_pong)
+        self.transport.on(MessageType.EDGE_LIST.value, self._on_edge_list)
         self._last_ping_seq = -1
         self._last_ping_t   = 0.0
 
@@ -745,27 +752,87 @@ class NetworkClient:
         with self._seq_lock:
             self._seq+=1; return self._seq
 
-    def connect(self):
-        """Ping edge, register, start recv loop."""
-        # Simple single ping to confirm edge is alive
-        seq=self._next_seq()
-        msg=create_message(MessageType.PING.value,self.client_id,seq)
-        self.transport.send(msg,self.server)
-
-        # Register
-        seq=self._next_seq()
-        reg=create_message(MessageType.REGISTER.value,self.client_id,seq,
-                           payload={"chosen_edge":f"{self.server[0]}:{self.server[1]}"})
-        self.transport.send(reg,self.server)
-
-        self._running=True
-        self.transport.start()
-        # Start periodic ping thread
-        t=threading.Thread(target=self._ping_loop,daemon=True); t.start()
-
     def stop(self):
         self._running=False; self.transport.close()
 
+    def connect(self):
+        self._running = True
+        self.transport.start()
+
+        self._edges = []
+        self._discover_event.clear()
+        self._send_discover()
+
+        if not self._discover_event.wait(timeout=2):
+            raise RuntimeError("edge discovery failed")
+
+        candidates = []
+        for e in self._edges:
+
+            candidates.append({
+                "name": e.get("name", ""),
+                "addr": (e["host"], int(e["port"])),
+            })
+
+        if not candidates:
+            raise RuntimeError("no discovered edges")
+
+        endpoints = [c["addr"] for c in candidates]
+
+        best_result, results = choose_best_endpoint(
+            self.transport,
+            endpoints,
+            self.client_id,
+            self.region,
+            n=7,
+        )
+
+        self.server = best_result.addr
+
+        for c in candidates:
+            if c["addr"] == self.server:
+                self.edge_name = c["name"]
+                break
+
+        print(f"[net] selected endpoint {self.edge_name} @ {self.server}")
+
+        self._send_register()
+
+        t = threading.Thread(target=self._ping_loop, daemon=True)
+        t.start()
+        
+    def _send_discover(self):
+        seq = self._next_seq()
+
+        msg = create_message(
+            MessageType.DISCOVER.value,
+            self.client_id,
+            seq,
+            payload={"region": self.region},
+        )
+
+        self.transport.send(msg, self.edge_addr) # main addr, rename
+    
+    def _on_edge_list(self, msg, addr):
+        self._edges = msg.get("payload", {}).get("edges", [])
+        self._discover_event.set()
+    
+    def _send_register(self):
+        seq = self._next_seq()
+
+        reg = create_message(
+            MessageType.REGISTER.value,
+            self.client_id,
+            seq,
+            payload={
+                "region": self.region,
+                "registered_edge": self.edge_name,
+                "registered_edge_addr": f"{self.server[0]}:{self.server[1]}",
+            },
+        )
+
+        self.transport.send(reg, self.server)
+        
     def send_state(self, player, tick, action=None):
         """Send PREDICTION with full player state + optional action."""
         seq=self._next_seq()
@@ -812,7 +879,12 @@ class NetworkClient:
             seq=self._next_seq()
             self._last_ping_seq=seq
             self._last_ping_t=_time.time()
-            msg=create_message(MessageType.PING.value,self.client_id,seq)
+            msg = create_message(
+                MessageType.PING.value,
+                self.client_id,
+                seq,
+                payload={"region": self.region},
+            )
             self.transport.send(msg,self.server)
 
     def drain_states(self):
@@ -884,7 +956,7 @@ def main():
     color_counter=[args.color+1]
 
     # Network
-    net=NetworkClient(args.client_id, edge_addr)
+    net=NetworkClient(args.client_id, edge_addr, region=args.region,)
     print(f"[warzone] connecting to edge {edge_addr} as {args.client_id!r} ...")
     net.connect()
     print(f"[warzone] connected.")

@@ -116,7 +116,7 @@ class Client:
             self.client_id,
             seq,
             payload={
-                "chosen_edge": f"{self.server[0]}:{self.server[1]}",
+                "registered_edge": f"{self.server[0]}:{self.server[1]}",
                 "region": self.region,
             },
         )

@@ -158,7 +158,7 @@ func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 	region, _ := common.GetString(msg.Payload, "region")
 
 	registeredTo := "main"
-	if v, ok := common.GetString(msg.Payload, "attached_edge"); ok && v != "" {
+	if v, ok := common.GetString(msg.Payload, "registered_edge"); ok && v != "" {
 		registeredTo = v
 	}
 
@@ -166,7 +166,7 @@ func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 		ClientID:   msg.ClientID,
 		Region:     region,
 		registeredTo: registeredTo,
-		Addr:       addr,
+		Addr:       addr, // either client addr (registered to main) or edge addr 
 	}
 
 	if registeredTo != "main" {
@@ -190,7 +190,7 @@ func (s *MainServer) handlePrediction(msg *common.Message, raw []byte, addr *net
 	// simulate client -> main delay
 	var inboundDelay time.Duration
 
-	if sender.registeredTo == "main" {
+	if sender.registeredTo == s.nodeName {
 		inboundDelay = common.DelayDuration(s.delayMatrix, sender.Region, s.nodeName)
 	} else {
 		inboundDelay = 0

@@ -25,7 +25,7 @@ type Message struct {
 type ClientInfo struct {
 	ClientID       string
 	Region         string
-	AttachedServer string
+	RegisteredServer string
 	Addr           *net.UDPAddr
 }
 

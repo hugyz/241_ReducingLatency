@@ -125,14 +125,14 @@ Client registers with the selected server.
 Payload:
 ```json
 {
-  "chosen_edge": "127.0.0.1:9000",
+  "registered_edge": "127.0.0.1:9000",
   "region": "A"
 }
 ```
 
 | Field | Type | Description |
 |------|------|-------------|
-| chosen_edge | string | Address of the selected server |
+| registered_edge | string | Address of the selected server |
 | region | string | Region of the client |
 
 ---

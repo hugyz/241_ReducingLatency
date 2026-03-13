@@ -141,7 +141,7 @@ When forwarding a `REGISTER` message to the main server, the payload should incl
 ```json
 {
   "region": "A",
-  "attached_edge": "B",
+  "registered_edge": "B",
   "forwarded_by": "B"
 }
 ```
