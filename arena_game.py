@@ -44,6 +44,7 @@ from protocol import MessageType, create_message, decode_message
 # ══════════════════════════════════════════════════════════════════════════════
 def parse_args():
     ap = argparse.ArgumentParser(description="WARZONE multiplayer client")
+    ap.add_argument("--main", default=None, help="main server host:port (for discovery)")
     ap.add_argument("--client-id", default="p1", help="unique player id")
     ap.add_argument("--edge",      default="127.0.0.1:8000", help="edge node host:port")
     ap.add_argument("--region", default="A", help="client region (A, B, etc) used for latency simulation")
@@ -518,9 +519,15 @@ class RemotePlayer:
         self.col      = PLAYER_COLORS[color_idx % len(PLAYER_COLORS)][1]
         self.col_dark = PLAYER_COLORS[color_idx % len(PLAYER_COLORS)][2]
         self.latency_ms = 0
+        self.last_timestamp_ms = 0   # ← add this
         self.last_seen  = _time.time()
 
-    def apply_state(self, payload, latency_ms):
+    def apply_state(self, payload, latency_ms, timestamp_ms):
+        # Reject stale updates
+        if timestamp_ms <= self.last_timestamp_ms:
+            return
+        self.last_timestamp_ms = timestamp_ms
+
         state = payload.get("state", {})
         self.x        = float(state.get("x", self.x))
         self.y        = float(state.get("y", self.y))
@@ -574,6 +581,7 @@ class Enemy:
         self.hp=self.MAX_HP; self.alive=True; self.state="patrol"
         self.patrol_timer=0.0; self.patrol_angle=random.uniform(0,math.tau); self.alert=0.0
         self.fire_rate=random.uniform(1.2,2.2); self.fire_cd=random.uniform(0,self.fire_rate)
+        self.last_timestamp_ms = 0
 
     def update(self,dt,player,bullets):
         dx=player.x-self.x; dy=player.y-self.y; d=math.hypot(dx,dy) or 1
@@ -720,11 +728,12 @@ def draw_hud(player, fps, kills, total, elapsed, remote_players, net_latency_ms)
 #  NETWORK CLIENT  (wraps UdpTransport, runs in background thread)
 # ══════════════════════════════════════════════════════════════════════════════
 class NetworkClient:
-    def __init__(self, client_id, edge_addr, region):
+    def __init__(self, client_id, edge_addr, region, main_addr=None):
         self.client_id  = client_id
         self.edge_addr  = edge_addr   # (host, port)
         self.edge_name = "main" # changed after discover/selection
         self.region     = region
+        self.main_addr = main_addr or edge_addr  # add this line after self.region = region
         self.transport  = UdpTransport(bind_port=0)
         self.server     = edge_addr
         self._seq       = 0
@@ -738,6 +747,7 @@ class NetworkClient:
         self._lock               = threading.Lock()
         self.remote_states       = {}   # client_id → latest payload dict
         self.remote_latencies    = {}   # client_id → latency_ms
+        self.remote_timestamps   = {}   # 
         self.pending_actions     = []   # list of action dicts to apply locally
         self.ping_ms             = 0
 
@@ -811,7 +821,7 @@ class NetworkClient:
             payload={"region": self.region},
         )
 
-        self.transport.send(msg, self.edge_addr) # main addr, rename
+        self.transport.send(msg, self.main_addr) # main addr, rename
     
     def _on_edge_list(self, msg, addr):
         self._edges = msg.get("payload", {}).get("edges", [])
@@ -852,22 +862,22 @@ class NetworkClient:
         self.transport.send(msg,self.server)
 
     def _on_prediction(self, msg, addr):
-        source_id   = msg.get("client_id")
-        send_ts     = msg.get("timestamp_ms",0)
-        now_ms      = int(_time.time()*1000)
-        latency_ms  = now_ms - send_ts
-        payload     = msg.get("payload",{})
+        source_id  = msg.get("client_id")
+        send_ts    = msg.get("timestamp_ms", 0)
+        now_ms     = int(_time.time()*1000)
+        latency_ms = now_ms - send_ts
+        payload    = msg.get("payload", {})
 
-        if source_id is None or source_id==self.client_id:
+        if source_id is None or source_id == self.client_id:
             return
 
         with self._lock:
-            self.remote_states[source_id]    = payload
-            self.remote_latencies[source_id] = latency_ms
-            # Queue any action from that player for local application
-            action=payload.get("action")
+            self.remote_states[source_id]              = payload
+            self.remote_latencies[source_id]           = latency_ms
+            self.remote_timestamps[source_id]          = send_ts   # ← add this
+            action = payload.get("action")
             if action:
-                self.pending_actions.append({"source_id":source_id,"action":action,"latency_ms":latency_ms})
+                self.pending_actions.append({"source_id": source_id, "action": action, "latency_ms": latency_ms})
 
     def _on_pong(self, msg, addr):
         if msg.get("seq")==self._last_ping_seq:
@@ -888,13 +898,13 @@ class NetworkClient:
             self.transport.send(msg,self.server)
 
     def drain_states(self):
-        """Return (remote_states copy, remote_latencies copy, pending_actions list)."""
         with self._lock:
-            states  =dict(self.remote_states)
-            lats    =dict(self.remote_latencies)
-            actions =list(self.pending_actions)
+            states     = dict(self.remote_states)
+            lats       = dict(self.remote_latencies)
+            timestamps = dict(self.remote_timestamps)   # ← add
+            actions    = list(self.pending_actions)
             self.pending_actions.clear()
-        return states,lats,actions
+        return states, lats, timestamps, actions        # ← add
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SPAWN HELPERS
@@ -956,7 +966,9 @@ def main():
     color_counter=[args.color+1]
 
     # Network
-    net=NetworkClient(args.client_id, edge_addr, region=args.region,)
+    main_addr = tuple(args.main.split(":")) if args.main else edge_addr
+    main_addr = (main_addr[0], int(main_addr[1]))
+    net=NetworkClient(args.client_id, edge_addr, region=args.region, main_addr=main_addr)
     print(f"[warzone] connecting to edge {edge_addr} as {args.client_id!r} ...")
     net.connect()
     print(f"[warzone] connected.")
@@ -1066,15 +1078,15 @@ def main():
             if kills>=total and total>0: game_over=True; victory=True
 
             # ── Network: apply remote states ─────────────────────────────────
-            states,lats,actions=net.drain_states()
+            states,lats,timestamps,actions=net.drain_states()
 
             # Update remote player objects
-            for cid,payload in states.items():
+            for cid, payload in states.items():
                 if cid not in remote_players:
-                    ci=color_counter[0] % len(PLAYER_COLORS)
-                    color_counter[0]+=1
-                    remote_players[cid]=RemotePlayer(cid,ci)
-                remote_players[cid].apply_state(payload, lats.get(cid,0))
+                    ci = color_counter[0] % len(PLAYER_COLORS)
+                    color_counter[0] += 1
+                    remote_players[cid] = RemotePlayer(cid, ci)
+                remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
 
             # Apply incoming actions
             for entry in actions:
