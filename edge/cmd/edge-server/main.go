@@ -12,16 +12,17 @@ import (
 
 type EdgeServer struct {
 	common.Server
-	upstreamAddr     *net.UDPAddr
-	upstreamAddrStr  string
-	upstreamNodeName string
+	upstreamAddr    *net.UDPAddr
+	upstreamAddrStr string
+	upstreamRegion  string
+	serverConns     map[string]*net.UDPConn
 }
 
 func main() {
 	server := mustNewEdgeServer()
 	defer server.Conn.Close()
 
-	fmt.Printf("--- %s (Edge) ---\n", server.NodeName)
+	fmt.Printf("--- %s (Edge) ---\n", server.NodeRegion)
 	fmt.Printf("Listening on: %s\n", server.Conn.LocalAddr().String())
 	fmt.Printf("Target: %s\n", server.upstreamAddrStr)
 	fmt.Printf("\n")
@@ -30,15 +31,14 @@ func main() {
 }
 
 func mustNewEdgeServer() *EdgeServer {
-	if len(os.Args) != 6 {
-		log.Fatal("Usage: <node_name> <upstream_addr> <listen_port> <delay_config.json> <upstream_node_name>")
+	if len(os.Args) != 5 {
+		log.Fatal("Usage: <node_region> <upstream_addr> <delay_config.json> <upstream_region>")
 	}
 
-	nodeName := os.Args[1]
+	nodeRegion := os.Args[1]
 	upstreamAddrStr := os.Args[2]
-	listenPort := os.Args[3]
-	delayConfigPath := os.Args[4]
-	upstreamNodeName := os.Args[5]
+	delayConfigPath := os.Args[3]
+	upstreamRegion := os.Args[4]
 
 	delayMatrix := common.MustLoadDelayMatrix(delayConfigPath)
 
@@ -49,7 +49,7 @@ func mustNewEdgeServer() *EdgeServer {
 		log.Fatal(err)
 	}
 
-	laddr, err := net.ResolveUDPAddr("udp4", displayIP+":"+listenPort)
+	laddr, err := net.ResolveUDPAddr("udp4", displayIP+":0")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -60,10 +60,11 @@ func mustNewEdgeServer() *EdgeServer {
 	}
 
 	return &EdgeServer{
-		Server:           common.NewServer(nodeName, conn, laddr, delayMatrix),
-		upstreamAddr:     upstreamAddr,
-		upstreamAddrStr:  upstreamAddrStr,
-		upstreamNodeName: upstreamNodeName,
+		Server:          common.NewServer(nodeRegion, conn, conn.LocalAddr().(*net.UDPAddr), delayMatrix),
+		upstreamAddr:    upstreamAddr,
+		upstreamAddrStr: upstreamAddrStr,
+		upstreamRegion:  upstreamRegion,
+		serverConns:     make(map[string]*net.UDPConn),
 	}
 }
 
@@ -85,11 +86,14 @@ func (s *EdgeServer) Run() {
 			continue
 		}
 
-		fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.NodeName, n, addr)
+		fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.NodeRegion, n, addr)
 
 		switch {
 		case msg != nil && msg.Type == common.MsgPing:
 			s.handlePing(msg, addr)
+
+		case msg != nil && msg.Type == common.MsgRegister:
+			s.handleRegister(msg, addr)
 
 		default:
 			s.handleClientMessage(data, msg, addr)
@@ -100,10 +104,7 @@ func (s *EdgeServer) Run() {
 func (s *EdgeServer) handleServerMessage(data []byte) {
 	// Relay packet coming back from main to all local clients.
 	// The edge handles the Edge -> Client delay.
-	for _, client := range s.Clients {
-		outDelay := common.DelayDuration(s.DelayMatrix, s.NodeName, client.Region)
-		s.SendAfter(data, client.Addr, outDelay)
-	}
+	s.BroadcastLocal(data, "")
 }
 
 func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
@@ -113,8 +114,8 @@ func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
 		Seq:         msg.Seq,
 		TimestampMs: msg.TimestampMs,
 		Payload: map[string]interface{}{
-			"edge":   s.NodeName,
-			"origin": s.NodeName,
+			"edge":   s.NodeRegion,
+			"origin": s.NodeRegion,
 		},
 	}
 
@@ -124,10 +125,49 @@ func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
 		return
 	}
 
-	originNode := common.OriginFromMessage(msg, s.NodeName)
-	replyDelay := common.DelayMS(s.DelayMatrix, originNode, s.NodeName)
+	originRegion := common.OriginFromMessage(msg, s.NodeRegion)
+	replyDelay := common.DelayMS(s.DelayMatrix, originRegion, s.NodeRegion)
 
 	s.SendAfter(resp, clientAddr, replyDelay)
+}
+
+func (s *EdgeServer) handleRegister(msg *common.Message, clientAddr *net.UDPAddr) {
+	region, _ := common.GetString(msg.Payload, "region")
+	client := &common.RegisteredClient{
+		ClientID:         msg.ClientID,
+		Region:           region,
+		RegisteredRegion: s.NodeRegion,
+		Addr:             clientAddr,
+	}
+
+	serverConn, err := net.DialUDP("udp4", nil, s.upstreamAddr)
+	if err != nil {
+		fmt.Printf("[edge] failed to bind new port for client %s: %v\n", msg.ClientID, err)
+		return
+	}
+	s.serverConns[msg.ClientID] = serverConn
+
+	s.Clients[msg.ClientID] = client
+	fmt.Printf("[NEW CLIENT] %s registered, bound upstream port %v\n", msg.ClientID, serverConn.LocalAddr())
+
+	// Swap the region with the Edge's own region
+	if msg.Payload == nil {
+		msg.Payload = make(map[string]interface{})
+	}
+	msg.Payload["region"] = s.NodeRegion
+
+	forwardData, err := common.EncodeMessage(msg)
+	if err != nil {
+		fmt.Printf("[edge] failed to encode register: %v\n", err)
+		return
+	}
+
+	inboundDelay := s.DelayFromClient(client)
+	time.AfterFunc(inboundDelay, func() {
+		_, _ = serverConn.Write(forwardData)
+	})
+
+	go s.runUpstreamReader(serverConn)
 }
 
 func (s *EdgeServer) handleClientMessage(data []byte, msg *common.Message, clientAddr *net.UDPAddr) {
@@ -139,10 +179,10 @@ func (s *EdgeServer) handleClientMessage(data []byte, msg *common.Message, clien
 	if !ok {
 		region, _ := common.GetString(msg.Payload, "region")
 		client = &common.RegisteredClient{
-			ClientID:     msg.ClientID,
-			Region:       region,
-			RegisteredTo: s.NodeName,
-			Addr:         clientAddr,
+			ClientID:         msg.ClientID,
+			Region:           region,
+			RegisteredRegion: s.NodeRegion,
+			Addr:             clientAddr,
 		}
 		s.Clients[msg.ClientID] = client
 		fmt.Printf("[NEW CLIENT] %s\n", msg.ClientID)
@@ -150,18 +190,29 @@ func (s *EdgeServer) handleClientMessage(data []byte, msg *common.Message, clien
 		client.Addr = clientAddr
 	}
 
-	inboundDelay := common.DelayDuration(s.DelayMatrix, client.Region, s.NodeName)
+	inboundDelay := s.DelayFromClient(client)
 
 	time.AfterFunc(inboundDelay, func() {
-		// Forward to main server immediately (server handles edge->main delay)
-		_, _ = s.Conn.WriteToUDP(data, s.upstreamAddr)
+		// Forward to main server using the dedicated connection if available
+		if conn, ok := s.serverConns[msg.ClientID]; ok {
+			_, _ = conn.Write(data)
+		} else {
+			_, _ = s.Conn.WriteToUDP(data, s.upstreamAddr)
+		}
 
 		// Forward incoming client packets to every other local client on this edge
-		for _, c := range s.Clients {
-			if c.ClientID != msg.ClientID {
-				outDelay := common.DelayDuration(s.DelayMatrix, s.NodeName, c.Region)
-				s.SendAfter(data, c.Addr, outDelay)
-			}
-		}
+		s.BroadcastLocal(data, msg.ClientID)
 	})
+}
+
+func (s *EdgeServer) runUpstreamReader(conn *net.UDPConn) {
+	buf := make([]byte, 4096)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			break
+		}
+		data := append([]byte(nil), buf[:n]...)
+		s.handleServerMessage(data)
+	}
 }
