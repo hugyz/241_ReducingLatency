@@ -31,19 +31,18 @@ func main() {
 }
 
 func mustNewMainServer() *MainServer {
-	if len(os.Args) != 4 {
-		log.Fatal("Usage: <node_region> <listen_port> <delay_config.json>")
+	if len(os.Args) != 3 {
+		log.Fatal("Usage: <node_region> <delay_config.json>")
 	}
 
 	region := os.Args[1]
-	listenPort := os.Args[2]
-	delayMatrix := common.MustLoadDelayMatrix(os.Args[3])
+	delayMatrix := common.MustLoadDelayMatrix(os.Args[2])
 
 	if _, ok := delayMatrix[region]; !ok {
 		log.Panicf("FATAL: Main server region %q not found in delay config", region)
 	}
 
-	laddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:"+listenPort)
+	laddr, err := net.ResolveUDPAddr("udp4", "0.0.0.0:")
 	if err != nil {
 		log.Fatal(err)
 	}

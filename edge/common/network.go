@@ -5,7 +5,6 @@ import (
 	"strings"
 )
 
-/*
 // GetLocalIP returns the first valid private LAN IPv4 address,
 // ignoring common virtual adapters (WSL, Hyper-V, VMware, etc).
 func GetLocalIP() string {
@@ -35,8 +34,8 @@ func GetLocalIP() string {
 	}
 	return "127.0.0.1"
 }
-*/
 
+/*
 func GetLocalIP() string {
 	interfaces, err := net.Interfaces()
 	if err != nil {
@@ -73,3 +72,4 @@ func GetLocalIP() string {
 	}
 	return "127.0.0.1"
 }
+*/

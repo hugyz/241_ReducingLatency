@@ -53,7 +53,7 @@ def parse_args():
     ap.add_argument("--terrain",   default="forest",
                     choices=["forest","desert","urban","snow","volcano"],
                     help="map terrain (must match all players)")
-    ap.add_argument("--no-ai",     action="store_true", help="disable AI enemies")
+    ap.add_argument("--ai", action="store_true", help="enable AI enemies")
     return ap.parse_args()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -959,7 +959,7 @@ def main():
     player=Player(args.color % len(PLAYER_COLORS))
     player.x=float(spawn_x); player.y=float(spawn_y)
 
-    enemies=spawn_enemies(0 if args.no_ai else 20)
+    enemies=spawn_enemies(20 if args.ai else 0)
     crates=spawn_crates(12)
     bullets=[]
     remote_players={}   # client_id → RemotePlayer
