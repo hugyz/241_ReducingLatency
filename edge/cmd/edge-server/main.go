@@ -14,7 +14,6 @@ type EdgeServer struct {
 	common.Server
 	upstreamAddr    *net.UDPAddr
 	upstreamAddrStr string
-	upstreamRegion  string
 	serverConns     map[string]*net.UDPConn
 }
 
@@ -31,14 +30,13 @@ func main() {
 }
 
 func mustNewEdgeServer() *EdgeServer {
-	if len(os.Args) != 5 {
-		log.Fatal("Usage: <node_region> <upstream_addr> <delay_config.json> <upstream_region>")
+	if len(os.Args) != 4 {
+		log.Fatal("Usage: <node_region> <upstream_addr> <delay_config.json>")
 	}
 
 	nodeRegion := os.Args[1]
 	upstreamAddrStr := os.Args[2]
 	delayConfigPath := os.Args[3]
-	upstreamRegion := os.Args[4]
 
 	delayMatrix := common.MustLoadDelayMatrix(delayConfigPath)
 
@@ -68,7 +66,6 @@ func mustNewEdgeServer() *EdgeServer {
 		Server:          common.NewServer(nodeRegion, conn, displayAddr, delayMatrix),
 		upstreamAddr:    upstreamAddr,
 		upstreamAddrStr: upstreamAddrStr,
-		upstreamRegion:  upstreamRegion,
 		serverConns:     make(map[string]*net.UDPConn),
 	}
 }
