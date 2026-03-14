@@ -53,7 +53,7 @@ func DelayDuration(matrix DelayMatrix, from, to string) time.Duration {
 		return 0
 	}
 
-	delay := DelayFor(matrix, from, to)
+	delay := DelayMS(matrix, from, to)
 	if delay < 0 {
 		return 0
 	}

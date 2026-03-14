@@ -5,50 +5,26 @@ import (
 	"log"
 	"net"
 	"os"
-	"sync"
-    "time"
+	"time"
 
 	"edge/common"
 )
 
-// edgeSession represents one local client connected through this edge.
-//
-// Current behavior:
-// - stores the client UDP address
-// - stores a dedicated UDP connection to the main server
-// - remembers client_id and origin info for debugging
-//
-// Still needed later:
-// - may need explicit registration state
-// - may need local client region if edge starts validating more fields
-type edgeSession struct {
-	clientAddr *net.UDPAddr
-	hostConn   *net.UDPConn
-	clientID   string
-	originNode string
-}
-
 type EdgeServer struct {
-	nodeName         string
+	common.Server
 	upstreamAddr     *net.UDPAddr
 	upstreamAddrStr  string
 	upstreamNodeName string
-	edgeConn         *net.UDPConn
-	displayIP        string
-	delayMatrix      common.DelayMatrix
-	upstreamDelay    time.Duration
-	sessions         sync.Map
 }
 
 func main() {
 	server := mustNewEdgeServer()
-	defer server.edgeConn.Close()
+	defer server.Conn.Close()
 
-	fmt.Printf("--- %s (Edge) ---\n", server.nodeName)
-	fmt.Printf("Detected LAN IP: %s\n", server.displayIP)
-	fmt.Printf("Listening on: %s\n", server.edgeConn.LocalAddr().String())
+	fmt.Printf("--- %s (Edge) ---\n", server.NodeName)
+	fmt.Printf("Listening on: %s\n", server.Conn.LocalAddr().String())
 	fmt.Printf("Target: %s\n", server.upstreamAddrStr)
-	fmt.Printf("Configured upstream delay: %v\n\n", server.upstreamDelay)
+	fmt.Printf("\n")
 
 	server.Run()
 }
@@ -65,7 +41,6 @@ func mustNewEdgeServer() *EdgeServer {
 	upstreamNodeName := os.Args[5]
 
 	delayMatrix := common.MustLoadDelayMatrix(delayConfigPath)
-	upstreamDelay := common.DelayFor(delayMatrix, nodeName, upstreamNodeName)
 
 	displayIP := common.PickBindIP(upstreamAddrStr)
 
@@ -79,20 +54,16 @@ func mustNewEdgeServer() *EdgeServer {
 		log.Fatal(err)
 	}
 
-	edgeConn, err := net.ListenUDP("udp4", laddr)
+	conn, err := net.ListenUDP("udp4", laddr)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	return &EdgeServer{
-		nodeName:         nodeName,
+		Server:           common.NewServer(nodeName, conn, laddr, delayMatrix),
 		upstreamAddr:     upstreamAddr,
 		upstreamAddrStr:  upstreamAddrStr,
 		upstreamNodeName: upstreamNodeName,
-		edgeConn:         edgeConn,
-		displayIP:        displayIP,
-		delayMatrix:      delayMatrix,
-		upstreamDelay:    upstreamDelay,
 	}
 }
 
@@ -100,7 +71,7 @@ func (s *EdgeServer) Run() {
 	buf := make([]byte, 4096)
 
 	for {
-		n, clientAddr, err := s.edgeConn.ReadFromUDP(buf)
+		n, addr, err := s.Conn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
@@ -108,35 +79,42 @@ func (s *EdgeServer) Run() {
 		data := append([]byte(nil), buf[:n]...)
 		msg, _ := common.DecodeMessage(data)
 
-		fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.nodeName, n, clientAddr)
+		// Intercept packets from upstream server
+		if addr.String() == s.upstreamAddr.String() {
+			s.handleServerMessage(data)
+			continue
+		}
+
+		fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.NodeName, n, addr)
 
 		switch {
 		case msg != nil && msg.Type == common.MsgPing:
-			s.handlePing(msg, clientAddr)
+			s.handlePing(msg, addr)
 
 		default:
-			s.handleClientMessage(data, msg, clientAddr)
+			s.handleClientMessage(data, msg, addr)
 		}
 	}
 }
 
-func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
-	// Current behavior:
-	// - replies to ping directly from the edge
-	// - simulates reply delay using origin -> edge
-	//
-	// Still needed later:
-	// - include region in ping payload from clients if not already present
-	// - keep behavior aligned with main server ping handling
+func (s *EdgeServer) handleServerMessage(data []byte) {
+	// Relay packet coming back from main to all local clients.
+	// The edge handles the Edge -> Client delay.
+	for _, client := range s.Clients {
+		outDelay := common.DelayDuration(s.DelayMatrix, s.NodeName, client.Region)
+		s.SendAfter(data, client.Addr, outDelay)
+	}
+}
 
+func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
 	pong := &common.Message{
 		Type:        common.MsgPong,
 		ClientID:    msg.ClientID,
 		Seq:         msg.Seq,
 		TimestampMs: msg.TimestampMs,
 		Payload: map[string]interface{}{
-			"edge":   s.nodeName,
-			"origin": s.nodeName,
+			"edge":   s.NodeName,
+			"origin": s.NodeName,
 		},
 	}
 
@@ -146,114 +124,44 @@ func (s *EdgeServer) handlePing(msg *common.Message, clientAddr *net.UDPAddr) {
 		return
 	}
 
-	originNode := common.OriginFromMessage(msg, s.nodeName)
-	replyDelay := common.DelayFor(s.delayMatrix, originNode, s.nodeName)
+	originNode := common.OriginFromMessage(msg, s.NodeName)
+	replyDelay := common.DelayMS(s.DelayMatrix, originNode, s.NodeName)
 
-	common.ScheduleSend(s.edgeConn, resp, clientAddr, replyDelay)
+	s.SendAfter(resp, clientAddr, replyDelay)
 }
 
 func (s *EdgeServer) handleClientMessage(data []byte, msg *common.Message, clientAddr *net.UDPAddr) {
-	// Current behavior:
-	// - creates or reuses a session for this client
-	// - broadcasts locally to other clients attached to this edge
-	// - forwards the message upstream to main with configured edge -> main delay
-	//
-	// Still needed later:
-	// - explicit REGISTER forwarding fields:
-	//     registered_edge
-	// - prediction forwarding rules to avoid loops when receiving from main
-	// - separate handling for messages coming from main vs local client
-	// - edge -> local-client delayed forwarding for downstream messages
-    // - add client -> edge delay
-
-	session := s.getOrCreateSession(clientAddr)
-	if session == nil {
+	if msg == nil {
 		return
 	}
 
-	if msg != nil {
-		session.originNode = common.OriginFromMessage(msg, s.nodeName)
-		session.clientID = msg.ClientID
-	}
-
-	// send the packet to other clients on this same edge
-	s.broadcastLocal(clientAddr.String(), data)
-
-	// Current upstream forwarding:
-	// sends every non-ping message to main using the configured upstream delay.
-	//
-	// Later this may need:
-	// - not forwarding messages that originated from main
-	common.ScheduleWrite(session.hostConn, data, s.upstreamDelay)
-}
-
-func (s *EdgeServer) getOrCreateSession(clientAddr *net.UDPAddr) *edgeSession {
-	key := clientAddr.String()
-
-	if val, ok := s.sessions.Load(key); ok {
-		return val.(*edgeSession)
-	}
-
-	hostConn, err := net.DialUDP("udp4", nil, s.upstreamAddr)
-	if err != nil {
-		fmt.Printf("[ERR] failed to dial upstream %s: %v\n", s.upstreamAddr, err)
-		return nil
-	}
-
-	session := &edgeSession{
-		clientAddr: clientAddr,
-		hostConn:   hostConn,
-	}
-
-	s.sessions.Store(key, session)
-	fmt.Printf("[NEW SESSION] %s\n", key)
-
-	go s.runUpstreamReader(key, session)
-
-	return session
-}
-
-func (s *EdgeServer) runUpstreamReader(sessionKey string, session *edgeSession) {
-	// Current behavior:
-	// - reads packets coming back from main on the per-session upstream socket
-	// - relays them back to the local client using upstreamDelay
-	//
-	// Still needed later:
-	// - this probably should use main -> edge and edge -> client logic separately
-	// - currently it uses one delay value for the return path
-	// - may need to fan out to multiple local clients if main broadcasts once to edge
-	defer session.hostConn.Close()
-
-	buf := make([]byte, 4096)
-	for {
-		n, _, err := session.hostConn.ReadFromUDP(buf)
-		if err != nil {
-			s.sessions.Delete(sessionKey)
-			return
+	client, ok := s.Clients[msg.ClientID]
+	if !ok {
+		region, _ := common.GetString(msg.Payload, "region")
+		client = &common.RegisteredClient{
+			ClientID:     msg.ClientID,
+			Region:       region,
+			RegisteredTo: s.NodeName,
+			Addr:         clientAddr,
 		}
-
-		respData := append([]byte(nil), buf[:n]...)
-
-		// Current behavior:
-		// sends back only to the client that owns this session.
-		//
-		// Later, for true edge relay behavior, packets from main may need to be
-		// distributed to all relevant local clients instead of only one session owner.
-		common.ScheduleSend(s.edgeConn, respData, session.clientAddr, s.upstreamDelay)
+		s.Clients[msg.ClientID] = client
+		fmt.Printf("[NEW CLIENT] %s\n", msg.ClientID)
+	} else {
+		client.Addr = clientAddr
 	}
-}
 
-func (s *EdgeServer) broadcastLocal(senderKey string, data []byte) {
-	// Current behavior:
-	// - forwards incoming client packets to every other local client on this edge
-	//
-	// Still needed later:
-	// - should only do this for prediction messages
-    // - should add edge -> client delay
-	s.sessions.Range(func(key, value interface{}) bool {
-		if key.(string) != senderKey {
-			_, _ = s.edgeConn.WriteToUDP(data, value.(*edgeSession).clientAddr)
+	inboundDelay := common.DelayDuration(s.DelayMatrix, client.Region, s.NodeName)
+
+	time.AfterFunc(inboundDelay, func() {
+		// Forward to main server immediately (server handles edge->main delay)
+		_, _ = s.Conn.WriteToUDP(data, s.upstreamAddr)
+
+		// Forward incoming client packets to every other local client on this edge
+		for _, c := range s.Clients {
+			if c.ClientID != msg.ClientID {
+				outDelay := common.DelayDuration(s.DelayMatrix, s.NodeName, c.Region)
+				s.SendAfter(data, c.Addr, outDelay)
+			}
 		}
-		return true
 	})
 }

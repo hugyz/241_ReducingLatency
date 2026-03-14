@@ -10,35 +10,22 @@ import (
 	"edge/common"
 )
 
-// all clients in the system
-type registeredClient struct {
-	ClientID   string
-	Region     string
-	registeredTo string // server the client is registered to
-	Addr       *net.UDPAddr // the client's address if registered to main, 
-	// otherwise the client's edge address
-}
-
-type edgeInfo struct {
+type EdgeInfo struct {
 	NodeName string
 	Addr     *net.UDPAddr
 }
 
 type MainServer struct {
-	nodeName    string
-	conn        *net.UDPConn
-	listenAddr  *net.UDPAddr
-	delayMatrix common.DelayMatrix
-	clients     map[string]*registeredClient
-	edges       map[string]*edgeInfo
+	common.Server
+	Edges map[string]*EdgeInfo
 }
 
 func main() {
 	server := mustNewMainServer()
-	defer server.conn.Close()
+	defer server.Conn.Close()
 
-	fmt.Printf("--- %s (Main Server) ---\n", server.nodeName)
-	fmt.Printf("Listening on: %s\n\n", server.conn.LocalAddr().String())
+	fmt.Printf("--- %s (Main Server) ---\n", server.NodeName)
+	fmt.Printf("Listening on: %s\n\n", server.Conn.LocalAddr().String())
 
 	server.Run()
 }
@@ -72,12 +59,8 @@ func mustNewMainServer() *MainServer {
 	}
 
 	return &MainServer{
-		nodeName:    nodeName,
-		conn:        conn,
-		listenAddr:  laddr,
-		delayMatrix: delayMatrix,
-		clients:     map[string]*registeredClient{},
-		edges:       map[string]*edgeInfo{},
+		Server: common.NewServer(nodeName, conn, laddr, delayMatrix),
+		Edges:  make(map[string]*EdgeInfo),
 	}
 }
 
@@ -85,7 +68,7 @@ func (s *MainServer) Run() {
 	buf := make([]byte, 4096)
 
 	for {
-		n, addr, err := s.conn.ReadFromUDP(buf)
+		n, addr, err := s.Conn.ReadFromUDP(buf)
 		if err != nil {
 			continue
 		}
@@ -98,7 +81,7 @@ func (s *MainServer) Run() {
 
 		switch msg.Type {
 		case common.MsgPing:
-			common.HandlePing(s.conn, s.nodeName, s.delayMatrix, msg, addr)
+			common.HandlePing(s.Conn, s.NodeName, s.DelayMatrix, msg, addr)
 
 		case common.MsgDiscover:
 			s.handleDiscover(msg, addr)
@@ -118,14 +101,14 @@ func (s *MainServer) Run() {
 func (s *MainServer) handleDiscover(msg *common.Message, addr *net.UDPAddr) {
 	servers := []map[string]interface{}{
 		{
-			"host": s.listenAddr.IP.String(),
-			"port": s.listenAddr.Port,
-			"name": s.nodeName,
+			"host": s.ListenAddr.IP.String(),
+			"port": s.ListenAddr.Port,
+			"name": s.NodeName,
 			"kind": "main",
 		},
 	}
 
-	for _, edge := range s.edges {
+	for _, edge := range s.Edges {
 		servers = append(servers, map[string]interface{}{
 			"host": edge.Addr.IP.String(),
 			"port": edge.Addr.Port,
@@ -151,26 +134,26 @@ func (s *MainServer) handleDiscover(msg *common.Message, addr *net.UDPAddr) {
 		return
 	}
 
-	s.sendAfter(resp, addr, 0)
+	s.SendAfter(resp, addr, 0)
 }
 
 func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 	region, _ := common.GetString(msg.Payload, "region")
 
-	registeredTo := s.nodeName
+	registeredTo := s.NodeName
 	if v, ok := common.GetString(msg.Payload, "registered_edge"); ok && v != "" {
 		registeredTo = v
 	}
 
-	s.clients[msg.ClientID] = &registeredClient{
-		ClientID:   msg.ClientID,
-		Region:     region,
-		registeredTo: registeredTo,
-		Addr:       addr, // either client addr (registered to main) or edge addr 
+	s.Clients[msg.ClientID] = &common.RegisteredClient{
+		ClientID:     msg.ClientID,
+		Region:       region,
+		RegisteredTo: registeredTo,
+		Addr:         addr, // either client addr (registered to main) or edge addr
 	}
 
-	if registeredTo != s.nodeName {
-		s.edges[registeredTo] = &edgeInfo{
+	if registeredTo != s.NodeName {
+		s.Edges[registeredTo] = &EdgeInfo{
 			NodeName: registeredTo,
 			Addr:     addr,
 		}
@@ -181,7 +164,7 @@ func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 }
 
 func (s *MainServer) handlePrediction(msg *common.Message, raw []byte, addr *net.UDPAddr) {
-	sender, ok := s.clients[msg.ClientID]
+	sender, ok := s.Clients[msg.ClientID]
 	if !ok {
 		fmt.Printf("[main] ignoring PREDICTION from unregistered client=%s\n", msg.ClientID)
 		return
@@ -190,13 +173,13 @@ func (s *MainServer) handlePrediction(msg *common.Message, raw []byte, addr *net
 	// simulate client -> main delay
 	var inboundDelay time.Duration
 
-	if sender.registeredTo == s.nodeName {
-		inboundDelay = common.DelayDuration(s.delayMatrix, sender.Region, s.nodeName)
+	if sender.RegisteredTo == s.NodeName {
+		inboundDelay = common.DelayDuration(s.DelayMatrix, sender.Region, s.NodeName)
 	} else {
-		inboundDelay = 0
+		inboundDelay = common.DelayDuration(s.DelayMatrix, sender.RegisteredTo, s.NodeName)
 	}
 	fmt.Printf("[main] PREDICTION client=%s region=%s registered_to=%s from=%s inbound_delay=%v\n",
-		msg.ClientID, sender.Region, sender.registeredTo, addr.String(), inboundDelay)
+		msg.ClientID, sender.Region, sender.RegisteredTo, addr.String(), inboundDelay)
 
 	go func(senderClientID string, data []byte, delay time.Duration) {
 		if delay > 0 {
@@ -207,29 +190,29 @@ func (s *MainServer) handlePrediction(msg *common.Message, raw []byte, addr *net
 }
 
 // right now this forwards predictions to all other EDGE NODES as well as the
-// main server's registered clients, but can change to all other CLIENTS if makes more sense 
+// main server's registered clients, but can change to all other CLIENTS if makes more sense
 func (s *MainServer) broadcastPrediction(data []byte, senderClientID string) {
-	sender, ok := s.clients[senderClientID]
+	sender, ok := s.Clients[senderClientID]
 	if !ok {
 		return
 	}
 
-	originAttachment := sender.registeredTo
+	originAttachment := sender.RegisteredTo
 	sentEdges := map[string]bool{}
 
 	// Send directly to clients attached to main
-	for clientID, client := range s.clients {
+	for clientID, client := range s.Clients {
 		if clientID == senderClientID {
 			continue
 		}
-		if client.registeredTo != s.nodeName {
+		if client.RegisteredTo != s.NodeName {
 			continue
 		}
 		if client.Addr == nil {
 			continue
 		}
 
-		delay := common.DelayDuration(s.delayMatrix, s.nodeName, client.Region)
+		delay := common.DelayDuration(s.DelayMatrix, s.NodeName, client.Region)
 
 		fmt.Printf(
 			"[main] BROADCAST source=%s(%s,%s) dest=%s(%s,%s) delay=%v to=%s\n",
@@ -238,51 +221,47 @@ func (s *MainServer) broadcastPrediction(data []byte, senderClientID string) {
 			originAttachment,
 			client.ClientID,
 			client.Region,
-			client.registeredTo,
+			client.RegisteredTo,
 			delay,
 			client.Addr.String(),
 		)
 
-		s.sendAfter(data, client.Addr, delay)
+		s.SendAfter(data, client.Addr, delay)
 	}
 
 	// Send once to each other edge, but not back to the sender's edge
-	for clientID, client := range s.clients {
+	for clientID, client := range s.Clients {
 		if clientID == senderClientID {
 			continue
 		}
-		if client.registeredTo == s.nodeName {
+		if client.RegisteredTo == s.NodeName {
 			continue
 		}
-		if client.registeredTo == originAttachment {
+		if client.RegisteredTo == originAttachment {
 			continue
 		}
-		if sentEdges[client.registeredTo] {
+		if sentEdges[client.RegisteredTo] {
 			continue
 		}
 
-		edge, ok := s.edges[client.registeredTo]
+		edge, ok := s.Edges[client.RegisteredTo]
 		if !ok || edge.Addr == nil {
 			continue
 		}
 
-		delay := common.DelayDuration(s.delayMatrix, s.nodeName, client.registeredTo)
+		delay := common.DelayDuration(s.DelayMatrix, s.NodeName, client.RegisteredTo)
 
 		fmt.Printf(
 			"[main] BROADCAST source=%s(%s,%s) dest_edge=%s delay=%v to=%s\n",
 			sender.ClientID,
 			sender.Region,
 			originAttachment,
-			client.registeredTo,
+			client.RegisteredTo,
 			delay,
 			edge.Addr.String(),
 		)
 
-		s.sendAfter(data, edge.Addr, delay)
-		sentEdges[client.registeredTo] = true
+		s.SendAfter(data, edge.Addr, delay)
+		sentEdges[client.RegisteredTo] = true
 	}
-}
-
-func (s *MainServer) sendAfter(data []byte, addr *net.UDPAddr, delay time.Duration) {
-	common.ScheduleSend(s.conn, data, addr, delay)
 }
