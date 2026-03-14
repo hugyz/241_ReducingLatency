@@ -105,18 +105,33 @@ func (s *EdgeServer) Run() {
 		data := append([]byte(nil), buf[:n]...)
 		msg, _ := common.DecodeMessage(data)
 
-		fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.NodeRegion, n, addr)
+		// fmt.Printf("[RECV][EDGE %s] %d bytes from %s\n", s.NodeRegion, n, addr)
 
-		switch {
-		case msg != nil && msg.Type == common.MsgPing:
-			s.HandlePing(msg, addr)
+		inboundDelay := s.InboundDelayFromMessage(msg)
 
-		case msg != nil && msg.Type == common.MsgRegister:
-			s.handleRegister(msg, addr)
+		// Shadow variables to safely capture them in the delayed goroutine closure
+		cMsg := msg
+		cAddr := addr
+		cData := data
 
-		default:
-			s.handleClientMessage(data, msg, addr)
+		exec := func() {
+			switch {
+			case cMsg != nil && cMsg.Type == common.MsgPing:
+				s.HandlePing(cMsg, cAddr)
+			case cMsg != nil && cMsg.Type == common.MsgRegister:
+				s.handleRegister(cMsg, cAddr)
+			case cMsg != nil && cMsg.Type == common.MsgEdgeList:
+				// Route EDGE_LIST back down to client
+				if client, ok := s.Clients[cMsg.ClientID]; ok {
+					outDelay := s.DelayToClient(client)
+					s.SendAfter(cData, client.Addr, outDelay)
+				}
+			default:
+				s.handleClientMessage(cData, cMsg, cAddr)
+			}
 		}
+
+		time.AfterFunc(inboundDelay, exec)
 	}
 }
 
@@ -150,10 +165,7 @@ func (s *EdgeServer) handleRegister(msg *common.Message, clientAddr *net.UDPAddr
 		return
 	}
 
-	inboundDelay := s.DelayFromClient(client)
-	time.AfterFunc(inboundDelay, func() {
-		_, _ = serverConn.Write(forwardData)
-	})
+	_, _ = serverConn.Write(forwardData)
 
 	go s.runUpstreamReader(msg.ClientID, serverConn)
 }
@@ -177,19 +189,15 @@ func (s *EdgeServer) handleClientMessage(data []byte, msg *common.Message, clien
 		client.Addr = clientAddr
 	}
 
-	inboundDelay := s.DelayFromClient(client)
+	// Forward to main server using the dedicated connection if available
+	if conn, ok := s.serverConns[msg.ClientID]; ok {
+		_, _ = conn.Write(data)
+	} else {
+		_, _ = s.Conn.WriteToUDP(data, s.upstreamAddr)
+	}
 
-	time.AfterFunc(inboundDelay, func() {
-		// Forward to main server using the dedicated connection if available
-		if conn, ok := s.serverConns[msg.ClientID]; ok {
-			_, _ = conn.Write(data)
-		} else {
-			_, _ = s.Conn.WriteToUDP(data, s.upstreamAddr)
-		}
-
-		// Forward incoming client packets to every other local client on this edge
-		s.BroadcastLocal(data, msg.ClientID)
-	})
+	// Forward incoming client packets to every other local client on this edge
+	s.BroadcastLocal(data, msg.ClientID)
 }
 
 func (s *EdgeServer) runUpstreamReader(clientID string, conn *net.UDPConn) {

@@ -63,18 +63,30 @@ func (s *Server) HandlePing(msg *Message, addr *net.UDPAddr) {
 		return
 	}
 
-	delay := DelayDuration(s.DelayMatrix, clientRegion, s.NodeRegion)
+	outboundDelay := DelayDuration(s.DelayMatrix, s.NodeRegion, clientRegion)
 
-	fmt.Printf(
-		"[server] PONG client=%s client_region=%s server=%s delay=%v to=%s\n",
-		msg.ClientID,
-		clientRegion,
-		s.NodeRegion,
-		delay,
-		addr.String(),
-	)
+	// The inbound delay was already simulated by waiting before executing this handler,
+	// so we only need to add the outbound delay for the return trip!
+	s.SendAfter(resp, addr, outboundDelay)
+}
 
-	s.SendAfter(resp, addr, delay)
+// InboundDelayFromMessage returns the delay from the message sender to this server.
+func (s *Server) InboundDelayFromMessage(msg *Message) time.Duration {
+	if msg == nil {
+		return 0
+	}
+	clientRegion := ""
+	if client, ok := s.Clients[msg.ClientID]; ok {
+		clientRegion = client.Region
+	}
+	if clientRegion == "" {
+		clientRegion, _ = GetString(msg.Payload, "region")
+	}
+	if clientRegion == "" {
+		fmt.Printf("Client %s does not have a region\n", msg.ClientID)
+		clientRegion = s.NodeRegion
+	}
+	return DelayDuration(s.DelayMatrix, clientRegion, s.NodeRegion)
 }
 
 // DelayDuration returns the delay between two regions as a time.Duration.

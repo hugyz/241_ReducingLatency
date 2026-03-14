@@ -77,7 +77,7 @@ func (s *MainServer) Run() {
 
 		data := append([]byte(nil), buf[:n]...)
 
-		fmt.Printf("[main] Received %d bytes from %s\n", n, addr.String())
+		// fmt.Printf("[main] Received %d bytes from %s\n", n, addr.String())
 
 		msg, err := common.DecodeMessage(data)
 		if err != nil || msg == nil {
@@ -85,21 +85,32 @@ func (s *MainServer) Run() {
 			continue
 		}
 
-		switch msg.Type {
-		case common.MsgPing:
-			s.HandlePing(msg, addr)
+		inboundDelay := s.InboundDelayFromMessage(msg)
 
-		case common.MsgDiscover:
-			s.handleDiscover(msg, addr)
+		// Shadow variables to safely capture them in the delayed goroutine closure
+		cMsg := msg
+		cAddr := addr
+		cData := data
 
-		case common.MsgRegister:
-			s.handleRegister(msg, addr)
+		exec := func() {
+			switch cMsg.Type {
+			case common.MsgPing:
+				s.HandlePing(cMsg, cAddr)
+			case common.MsgDiscover:
+				s.handleDiscover(cMsg, cAddr)
+			case common.MsgRegister:
+				s.handleRegister(cMsg, cAddr)
+			case common.MsgPrediction:
+				s.handlePrediction(cMsg, cData)
+			default:
+				fmt.Printf("[main] ignoring unsupported msg type=%s from=%s\n", cMsg.Type, cAddr.String())
+			}
+		}
 
-		case common.MsgPrediction:
-			s.handlePrediction(msg, data, addr)
-
-		default:
-			fmt.Printf("[main] ignoring unsupported msg type=%s from=%s\n", msg.Type, addr.String())
+		if inboundDelay > 0 {
+			time.AfterFunc(inboundDelay, exec)
+		} else {
+			exec()
 		}
 	}
 }
@@ -140,7 +151,12 @@ func (s *MainServer) handleDiscover(msg *common.Message, addr *net.UDPAddr) {
 		return
 	}
 
-	s.SendAfter(resp, addr, 0)
+	clientRegion, _ := common.GetString(msg.Payload, "region")
+	if clientRegion == "" {
+		clientRegion = s.NodeRegion
+	}
+	outboundDelay := common.DelayDuration(s.DelayMatrix, s.NodeRegion, clientRegion)
+	s.SendAfter(resp, addr, outboundDelay)
 }
 
 func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
@@ -167,22 +183,11 @@ func (s *MainServer) handleRegister(msg *common.Message, addr *net.UDPAddr) {
 		msg.ClientID, region, addr.String())
 }
 
-func (s *MainServer) handlePrediction(msg *common.Message, raw []byte, addr *net.UDPAddr) {
-	sender, ok := s.Clients[msg.ClientID]
-	if !ok {
+func (s *MainServer) handlePrediction(msg *common.Message, raw []byte) {
+	if _, ok := s.Clients[msg.ClientID]; !ok {
 		fmt.Printf("[main] ignoring PREDICTION from unregistered client=%s\n", msg.ClientID)
 		return
 	}
 
-	// simulate client -> main delay
-	inboundDelay := s.DelayFromClient(sender)
-	fmt.Printf("[main] PREDICTION client=%s region=%s from=%s inbound_delay=%v\n",
-		msg.ClientID, sender.Region, addr.String(), inboundDelay)
-
-	go func(senderClientID string, data []byte, delay time.Duration) {
-		if delay > 0 {
-			time.Sleep(delay)
-		}
-		s.BroadcastLocal(data, senderClientID)
-	}(msg.ClientID, append([]byte(nil), raw...), inboundDelay)
+	s.BroadcastLocal(raw, msg.ClientID)
 }
