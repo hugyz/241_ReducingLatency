@@ -59,7 +59,7 @@ func GetLocalIP() string {
 			if ipnet, ok := address.(*net.IPNet); ok && ipnet.IP.To4() != nil {
 				ip := ipnet.IP
 				if !ip.IsLinkLocalUnicast() && ip.IsPrivate() {
-					if strings.HasPrefix(ip.String(), "192.168.") {
+					if strings.HasPrefix(ip.String(), "172.19.") {
 						return ip.String()
 					}
 					fallback = ip.String()
