@@ -773,7 +773,7 @@ class NetworkClient:
         self._discover_event.clear()
         self._send_discover()
 
-        if not self._discover_event.wait(timeout=2):
+        if not self._discover_event.wait(timeout=20):
             raise RuntimeError("edge discovery failed")
 
         candidates = []
