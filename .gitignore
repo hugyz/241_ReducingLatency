@@ -7,6 +7,7 @@ edge/Edge
 *.dylib
 *.test
 *.out
+*.txt
 
 main-server
 edge-server
