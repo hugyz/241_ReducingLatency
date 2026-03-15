@@ -31,6 +31,7 @@ import sys
 import threading
 import time as _time
 
+import pandas as pd
 import pygame
 
 # ── Try to import networking from python-client/ ───────────────────────────────
@@ -988,210 +989,231 @@ def main():
     for y in range(0,H,3):
         pygame.draw.line(scanlines,(0,0,0,22),(0,y),(W,y))
 
-    while True:
-        dt=min(clock.tick(60)/1000.0, 0.05)
-        fps=clock.get_fps()
-        mx,my=pygame.mouse.get_pos()
-        keys=pygame.key.get_pressed()
+    latency_log = []
 
-        # ── Events ──────────────────────────────────────────────────────────
-        pending_shot=None
-        for event in pygame.event.get():
-            if event.type==pygame.QUIT:
-                net.stop(); pygame.quit(); sys.exit()
-            if event.type==pygame.KEYDOWN:
-                if event.key==pygame.K_ESCAPE:
-                    net.stop(); pygame.quit(); sys.exit()
-                if not game_over:
-                    if event.key==pygame.K_r: player.reload()
-                    if event.key==pygame.K_e:
-                        for i,c in enumerate(crates):
-                            if c.alive and math.hypot(c.x-player.x,c.y-player.y)<36:
-                                player.give_weapon(c.weapon_idx)
-                                c.alive=False
-                                net.send_state(player,tick,action={"type":"pickup","crate_idx":i})
+    try:
+        while True:
+            dt=min(clock.tick(60)/1000.0, 0.05)
+            fps=clock.get_fps()
+            mx,my=pygame.mouse.get_pos()
+            keys=pygame.key.get_pressed()
+
+            # ── Events ──────────────────────────────────────────────────────────
+            pending_shot=None
+            for event in pygame.event.get():
+                if event.type==pygame.QUIT:
+                    net.stop(); pygame.quit(); return
+                if event.type==pygame.KEYDOWN:
+                    if event.key==pygame.K_ESCAPE:
+                        net.stop(); pygame.quit(); return
+                    if not game_over:
+                        if event.key==pygame.K_r: player.reload()
+                        if event.key==pygame.K_e:
+                            for i,c in enumerate(crates):
+                                if c.alive and math.hypot(c.x-player.x,c.y-player.y)<36:
+                                    player.give_weapon(c.weapon_idx)
+                                    c.alive=False
+                                    net.send_state(player,tick,action={"type":"pickup","crate_idx":i})
+                                    break
+                        for num in range(pygame.K_1,pygame.K_8):
+                            if event.key==num: player.switch_weapon(num-pygame.K_1+1)
+                    if game_over and event.key==pygame.K_r:
+                        net.stop(); latency_log.clear(); main(); return
+
+            # ── Local game update ────────────────────────────────────────────────
+            if not game_over:
+                elapsed+=dt; tick+=1
+                player.update(dt,keys,mx,my)
+
+                # Shoot
+                if pygame.mouse.get_pressed()[0]:
+                    shots=player.shoot(bullets)
+                    if shots: pending_shot=shots[0]
+
+                # AI enemies
+                for e in enemies:
+                    if e.alive: e.update(dt,player,bullets)
+                for c in crates:
+                    if c.alive: c.update()
+                for b in bullets:
+                    b.update()
+
+                # Bullet ↔ local player (from enemy/remote bullets)
+                for b in bullets[:]:
+                    if b.alive and b.owner_id not in ("local", args.client_id):
+                        if math.hypot(b.x-player.x,b.y-player.y)<player.RADIUS+3:
+                            player.take_hit(b.damage); b.alive=False
+                            if not player.alive: game_over=True
+
+                # Bullet ↔ enemies (local bullets only)
+                for b in bullets[:]:
+                    if b.alive and b.owner_id=="local":
+                        for e in enemies:
+                            if e.alive and math.hypot(b.x-e.x,b.y-e.y)<e.RADIUS+b.b_size:
+                                e.take_hit(b.damage)
+                                if b.special=="pierce":
+                                    b.pierced+=1
+                                    if b.pierced>=3: b.alive=False
+                                elif b.special=="explode":
+                                    b.alive=False; spawn_explosion(b.x,b.y)
+                                    for e2 in enemies:
+                                        if e2.alive and e2 is not e and math.hypot(b.x-e2.x,b.y-e2.y)<70:
+                                            e2.take_hit(b.damage//2)
+                                            if not e2.alive: kills+=1
+                                elif b.special!="rail":
+                                    b.alive=False
+                                if not e.alive: kills+=1
+                                if b.special not in ("pierce","rail"): break
+
+                # Bullet ↔ remote players (local bullets → remote player hit)
+                for b in bullets[:]:
+                    if b.alive and b.owner_id=="local":
+                        for rp in remote_players.values():
+                            if rp.alive and math.hypot(b.x-rp.x,b.y-rp.y)<rp.RADIUS+b.b_size:
+                                # Send hit notification — remote client applies damage
+                                net.send_state(player,tick,action={
+                                    "type":"hit","target_id":rp.client_id,"damage":b.damage})
+                                spawn_blood(b.x,b.y,5)
+                                if b.special not in ("pierce","rail"): b.alive=False
                                 break
-                    for num in range(pygame.K_1,pygame.K_8):
-                        if event.key==num: player.switch_weapon(num-pygame.K_1+1)
-                if game_over and event.key==pygame.K_r:
-                    net.stop(); main(); return
 
-        # ── Local game update ────────────────────────────────────────────────
-        if not game_over:
-            elapsed+=dt; tick+=1
-            player.update(dt,keys,mx,my)
+                bullets=[b for b in bullets if b.alive]
 
-            # Shoot
-            if pygame.mouse.get_pressed()[0]:
-                shots=player.shoot(bullets)
-                if shots: pending_shot=shots[0]
+                if kills>=total and total>0: game_over=True; victory=True
 
-            # AI enemies
-            for e in enemies:
-                if e.alive: e.update(dt,player,bullets)
-            for c in crates:
-                if c.alive: c.update()
-            for b in bullets:
-                b.update()
+                # ── Network: apply remote states ─────────────────────────────────
+                states,lats,timestamps,actions=net.drain_states()
 
-            # Bullet ↔ local player (from enemy/remote bullets)
-            for b in bullets[:]:
-                if b.alive and b.owner_id not in ("local", args.client_id):
-                    if math.hypot(b.x-player.x,b.y-player.y)<player.RADIUS+3:
-                        player.take_hit(b.damage); b.alive=False
+                # Update remote player objects
+                for cid, payload in states.items():
+                    if cid not in remote_players:
+                        ci = color_counter[0] % len(PLAYER_COLORS)
+                        color_counter[0] += 1
+                        remote_players[cid] = RemotePlayer(cid, ci)
+                    remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
+
+                # Apply incoming actions
+                for entry in actions:
+                    src=entry["source_id"]; act=entry["action"]
+                    atype=act.get("type")
+
+                    if atype=="shoot":
+                        # Spawn remote bullet locally
+                        bx=float(act.get("bx",0)); by=float(act.get("by",0))
+                        angle=float(act.get("angle",0))
+                        widx=int(act.get("weapon_idx",0))
+                        seed=int(act.get("spread_seed",0))
+                        w=WEAPONS[widx]
+                        rng=random.Random(seed)
+                        for _ in range(w["count"]):
+                            spread=rng.uniform(-w["spread"],w["spread"])
+                            bullets.append(Bullet(bx,by,angle+spread,src,w,is_local=False))
+                        spawn_flash(bx,by,angle)
+
+                    elif atype=="hit" and act.get("target_id")==args.client_id:
+                        # We were hit
+                        player.take_hit(int(act.get("damage",0)))
                         if not player.alive: game_over=True
 
-            # Bullet ↔ enemies (local bullets only)
-            for b in bullets[:]:
-                if b.alive and b.owner_id=="local":
-                    for e in enemies:
-                        if e.alive and math.hypot(b.x-e.x,b.y-e.y)<e.RADIUS+b.b_size:
-                            e.take_hit(b.damage)
-                            if b.special=="pierce":
-                                b.pierced+=1
-                                if b.pierced>=3: b.alive=False
-                            elif b.special=="explode":
-                                b.alive=False; spawn_explosion(b.x,b.y)
-                                for e2 in enemies:
-                                    if e2.alive and e2 is not e and math.hypot(b.x-e2.x,b.y-e2.y)<70:
-                                        e2.take_hit(b.damage//2)
-                                        if not e2.alive: kills+=1
-                            elif b.special!="rail":
-                                b.alive=False
-                            if not e.alive: kills+=1
-                            if b.special not in ("pierce","rail"): break
+                    elif atype=="pickup":
+                        idx=int(act.get("crate_idx",-1))
+                        if 0<=idx<len(crates): crates[idx].alive=False
 
-            # Bullet ↔ remote players (local bullets → remote player hit)
-            for b in bullets[:]:
-                if b.alive and b.owner_id=="local":
-                    for rp in remote_players.values():
-                        if rp.alive and math.hypot(b.x-rp.x,b.y-rp.y)<rp.RADIUS+b.b_size:
-                            # Send hit notification — remote client applies damage
-                            net.send_state(player,tick,action={
-                                "type":"hit","target_id":rp.client_id,"damage":b.damage})
-                            spawn_blood(b.x,b.y,5)
-                            if b.special not in ("pierce","rail"): b.alive=False
-                            break
+                # Send our state every 2nd frame (~30Hz)
+                net_tick+=1
+                if net_tick%2==0:
+                    action=pending_shot  # may be None
+                    if not player.alive and net_tick%60==0:
+                        action={"type":"dead"}
+                    net.send_state(player,tick,action=action)
 
-            bullets=[b for b in bullets if b.alive]
+                # Remove stale remote players (no update in 5s = disconnected)
+                now=_time.time()
+                for cid in list(remote_players.keys()):
+                    if now-remote_players[cid].last_seen>5.0:
+                        del remote_players[cid]
 
-            if kills>=total and total>0: game_over=True; victory=True
+                update_particles()
+                if player.alive:
+                    update_cam(player.x,player.y)
+                elif player.died_x is not None:
+                    update_cam(player.died_x,player.died_y)
 
-            # ── Network: apply remote states ─────────────────────────────────
-            states,lats,timestamps,actions=net.drain_states()
+            # ── DRAW ────────────────────────────────────────────────────────────
+            t=TERRAINS[CUR_TERRAIN]
+            screen.fill(t["bg"])
+            draw_map(screen,cam.x,cam.y)
+            draw_particles(screen)
 
-            # Update remote player objects
-            for cid, payload in states.items():
-                if cid not in remote_players:
-                    ci = color_counter[0] % len(PLAYER_COLORS)
-                    color_counter[0] += 1
-                    remote_players[cid] = RemotePlayer(cid, ci)
-                remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
-
-            # Apply incoming actions
-            for entry in actions:
-                src=entry["source_id"]; act=entry["action"]
-                atype=act.get("type")
-
-                if atype=="shoot":
-                    # Spawn remote bullet locally
-                    bx=float(act.get("bx",0)); by=float(act.get("by",0))
-                    angle=float(act.get("angle",0))
-                    widx=int(act.get("weapon_idx",0))
-                    seed=int(act.get("spread_seed",0))
-                    w=WEAPONS[widx]
-                    rng=random.Random(seed)
-                    for _ in range(w["count"]):
-                        spread=rng.uniform(-w["spread"],w["spread"])
-                        bullets.append(Bullet(bx,by,angle+spread,src,w,is_local=False))
-                    spawn_flash(bx,by,angle)
-
-                elif atype=="hit" and act.get("target_id")==args.client_id:
-                    # We were hit
-                    player.take_hit(int(act.get("damage",0)))
-                    if not player.alive: game_over=True
-
-                elif atype=="pickup":
-                    idx=int(act.get("crate_idx",-1))
-                    if 0<=idx<len(crates): crates[idx].alive=False
-
-            # Send our state every 2nd frame (~30Hz)
-            net_tick+=1
-            if net_tick%2==0:
-                action=pending_shot  # may be None
-                if not player.alive and net_tick%60==0:
-                    action={"type":"dead"}
-                net.send_state(player,tick,action=action)
-
-            # Remove stale remote players (no update in 5s = disconnected)
-            now=_time.time()
-            for cid in list(remote_players.keys()):
-                if now-remote_players[cid].last_seen>5.0:
-                    del remote_players[cid]
-
-            update_particles()
-            if player.alive:
-                update_cam(player.x,player.y)
-            elif player.died_x is not None:
-                update_cam(player.died_x,player.died_y)
-
-        # ── DRAW ────────────────────────────────────────────────────────────
-        t=TERRAINS[CUR_TERRAIN]
-        screen.fill(t["bg"])
-        draw_map(screen,cam.x,cam.y)
-        draw_particles(screen)
-
-        for b in bullets: b.draw(screen)
-        for c in crates:
-            if c.alive: c.draw(screen)
-        for e in enemies:
-            if e.alive and math.hypot(e.x-player.x,e.y-player.y)<FOG_R+30:
-                e.draw(screen)
-
-        # Draw remote players (always visible — no fog on other humans)
-        for rp in remote_players.values():
-            rp.draw(screen)
-
-        if player.alive:
-            player.draw(screen)
-        elif player.died_x is not None:
-            sx,sy=ws(player.died_x,player.died_y)
-            if -20<sx<W+20 and -20<sy<H+20:
-                r=Player.RADIUS
-                pygame.draw.circle(screen,(80,20,20),(int(sx),int(sy)),r)
-                pygame.draw.line(screen,(160,40,40),(int(sx)-r+4,int(sy)-r+4),(int(sx)+r-4,int(sy)+r-4),3)
-                pygame.draw.line(screen,(160,40,40),(int(sx)+r-4,int(sy)-r+4),(int(sx)-r+4,int(sy)+r-4),3)
-        if player.hurt_flash>0 and player.alive:
-            t2=player.hurt_flash/0.18
-            tint=pygame.Surface((W,H),pygame.SRCALPHA)
-            tint.fill((180,0,0,int(60*t2))); screen.blit(tint,(0,0))
-
-        draw_fog(player)
-        screen.blit(scanlines,(0,0))
-        draw_hud(player,fps,kills,total,elapsed,remote_players,net.ping_ms)
-
-        # Crate pickup prompt
-        if not game_over:
+            for b in bullets: b.draw(screen)
             for c in crates:
-                if c.alive and math.hypot(c.x-player.x,c.y-player.y)<50:
-                    sx2,sy2=ws(c.x,c.y)
-                    prompt=fnt_s.render("[E] PICK UP",True,CRATE_HL)
-                    screen.blit(prompt,(int(sx2)-prompt.get_width()//2,int(sy2)+18))
+                if c.alive: c.draw(screen)
+            for e in enemies:
+                if e.alive and math.hypot(e.x-player.x,e.y-player.y)<FOG_R+30:
+                    e.draw(screen)
 
-        if game_over:
-            overlay=pygame.Surface((W,H),pygame.SRCALPHA); overlay.fill((0,0,0,140))
-            screen.blit(overlay,(0,0))
-            msg="MISSION COMPLETE" if victory else "KIA"
-            sub=f"TIME: {int(elapsed)}s   KILLS: {kills}/{total}" if victory else "KILLED IN ACTION"
-            col=HUD_G if victory else HUD_R
-            t1=fnt_xl.render(msg,True,col); t2=fnt_m.render(sub,True,HUD_W)
-            t3=fnt_s.render("[R] RESTART  |  [ESC] QUIT",True,(120,140,120))
-            screen.blit(t1,(W//2-t1.get_width()//2,H//2-70))
-            screen.blit(t2,(W//2-t2.get_width()//2,H//2+10))
-            screen.blit(t3,(W//2-t3.get_width()//2,H//2+52))
+            # Draw remote players (always visible — no fog on other humans)
+            for rp in remote_players.values():
+                rp.draw(screen)
 
-        pygame.display.flip()
+            if player.alive:
+                player.draw(screen)
+            elif player.died_x is not None:
+                sx,sy=ws(player.died_x,player.died_y)
+                if -20<sx<W+20 and -20<sy<H+20:
+                    r=Player.RADIUS
+                    pygame.draw.circle(screen,(80,20,20),(int(sx),int(sy)),r)
+                    pygame.draw.line(screen,(160,40,40),(int(sx)-r+4,int(sy)-r+4),(int(sx)+r-4,int(sy)+r-4),3)
+                    pygame.draw.line(screen,(160,40,40),(int(sx)+r-4,int(sy)-r+4),(int(sx)-r+4,int(sy)+r-4),3)
+            if player.hurt_flash>0 and player.alive:
+                t2=player.hurt_flash/0.18
+                tint=pygame.Surface((W,H),pygame.SRCALPHA)
+                tint.fill((180,0,0,int(60*t2))); screen.blit(tint,(0,0))
+
+            draw_fog(player)
+            screen.blit(scanlines,(0,0))
+            draw_hud(player,fps,kills,total,elapsed,remote_players,net.ping_ms)
+
+            # Crate pickup prompt
+            if not game_over:
+                for c in crates:
+                    if c.alive and math.hypot(c.x-player.x,c.y-player.y)<50:
+                        sx2,sy2=ws(c.x,c.y)
+                        prompt=fnt_s.render("[E] PICK UP",True,CRATE_HL)
+                        screen.blit(prompt,(int(sx2)-prompt.get_width()//2,int(sy2)+18))
+
+            if game_over:
+                overlay=pygame.Surface((W,H),pygame.SRCALPHA); overlay.fill((0,0,0,140))
+                screen.blit(overlay,(0,0))
+                msg="MISSION COMPLETE" if victory else "KIA"
+                sub=f"TIME: {int(elapsed)}s   KILLS: {kills}/{total}" if victory else "KILLED IN ACTION"
+                col=HUD_G if victory else HUD_R
+                t1=fnt_xl.render(msg,True,col); t2=fnt_m.render(sub,True,HUD_W)
+                t3=fnt_s.render("[R] RESTART  |  [ESC] QUIT",True,(120,140,120))
+                screen.blit(t1,(W//2-t1.get_width()//2,H//2-70))
+                screen.blit(t2,(W//2-t2.get_width()//2,H//2+10))
+                screen.blit(t3,(W//2-t3.get_width()//2,H//2+52))
+
+            pygame.display.flip()
+
+            # Record latency data for this tick
+            record = {"timestamp": _time.time(), "tick": tick}
+            for cid, rp in remote_players.items():
+                record[cid] = rp.latency_ms
+            latency_log.append(record)
+
+    finally:
+        if latency_log:
+            os.makedirs("logs", exist_ok=True)
+            df = pd.DataFrame(latency_log)
+            # Ensure timestamp and tick are the first columns
+            cols = ["timestamp", "tick"] + [c for c in df.columns if c not in ["timestamp", "tick"]]
+            df = df[cols]
+            df.to_csv(f"logs/{args.client_id}.csv", index=False)
 
 
-if __name__=="__main__":
-    main()
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass
