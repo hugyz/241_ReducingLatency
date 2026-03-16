@@ -62,30 +62,98 @@ This produces two binaries: main-server and edge-server.
 
 ## Running the Servers
 
-### Main server
+You can either run the servers directly using `go run`, or build the binaries first and run them.
 
-    go run cmd/main-server <region> <listen_addr> <config.json>
+---
 
-Example -- main server in region A, listening on port 8000:
+### Main Server
 
-    go run cmd/main-server A 127.0.0.1:8000 config.json
+Run with Go:
 
-Or with the compiled binary:
+```
+go run cmd/main-server <region> <config.json>
+```
 
-    ./main-server A 127.0.0.1:8000 config.json
+Example:
 
-### Edge server
+```
+go run cmd/main-server A config.json
+```
 
-    go run cmd/edge-server <region> <main_server_port> <config.json>
+Or run the compiled binary:
 
-Example -- edge node in region B, connecting back to main on port 8000,
-listening on port 9001:
+```
+./main-server <region> <config.json>
+```
 
-    go run cmd/edge-server B 127.0.0.1:8000 9001 config.json
+Example:
 
-Or with the compiled binary:
+```
+./main-server A config.json
+```
 
-    ./edge-server B 127.0.0.1:8000 9001 config.json
+The main server automatically binds to an available UDP port and prints the address it is listening on.
+
+Example output:
+
+```
+--- A (Main Server) ---
+Listening on: 192.168.1.5:8000
+```
+
+The printed address should be used by edge servers and clients when connecting.
+
+---
+
+### Edge Server
+
+Run with Go:
+
+```
+go run cmd/edge-server <region> <main_host:port> <config.json>
+```
+
+Example:
+
+```
+go run cmd/edge-server B 127.0.0.1:8000 config.json
+```
+
+Or run the compiled binary:
+
+```
+./edge-server <region> <main_host:port> <config.json>
+```
+
+Example:
+
+```
+./edge-server B 127.0.0.1:8000 config.json
+```
+
+The edge server automatically binds to an available UDP port, registers itself with the main server, and begins relaying client traffic.
+
+Example output:
+
+```
+--- B (Edge) ---
+Listening on: 192.168.1.5:9001
+Target: 127.0.0.1:8000
+```
+
+Edge servers act as regional relay nodes between clients and the main server.
+
+---
+
+### Startup Order
+
+Servers should be started in the following order:
+
+```
+1. Main server
+2. Edge servers
+3. Game clients
+```
 
 ---
 
@@ -173,17 +241,17 @@ Adjust config.json to set the desired latency between A and B.
 
 ### Perth/Sydney geographic experiment
 
-Simulates intercity latency (~70 ms one-way). The main server represents
+Simulates intercity latency (~45 ms one-way). The main server represents
 Sydney; the edge node represents Perth. Update config.json with region names
 "Sydney" and "Perth" and set the delay values accordingly (see the
 config.json section below). The main server routes Perth clients to the
 Perth edge and retains Sydney clients directly.
 
     # Terminal 1 - main server (Sydney)
-    ./main-server Sydney 127.0.0.1:8000 config.json
+    ./main-server Sydney  config.json
 
     # Terminal 2 - edge node (Perth)
-    ./edge-server Perth 127.0.0.1:8000 9001 config.json
+    ./edge-server Perth 127.0.0.1:8000 config.json
 
     # Sydney players (direct to main)
     python arena_game.py --client-id sydney1 --edge 127.0.0.1:8000 \
@@ -264,18 +332,19 @@ If a pair is missing, the delay defaults to zero.
         }
     }
 
-### Perth/Sydney (~70 ms one-way)
+### Perth/Sydney example (~45 ms one-way cross-country)
 
-    {
+    {   
         "Sydney": {
             "Sydney": 5,
-            "Perth":  70
+            "Perth":  45
         },
         "Perth": {
-            "Sydney": 70,
+            "Sydney": 45,
             "Perth":  5
         }
     }
+
 
 ### Three-region EU/US/Asia example
 
@@ -379,3 +448,39 @@ action can be null or one of:
     { "type": "hit",    "target_id": "p2", "damage": 12 }
     { "type": "dead" }
     { "type": "pickup", "crate_idx": 3 }
+
+## Plotting Latency Logs
+
+Latency logs recorded by the clients can be visualized using `plot_latency.py`. This script supports both per-client latency plots and aggregate latency plots across all client CSV files in a folder.
+
+
+The script reads client CSV logs, aligns them onto a common timeline, computes latency metrics, and plots the results using `matplotlib`.
+
+### Features
+
+- plot all connection latencies for a single client log
+- align multiple client logs to a common framerate
+- compute aggregate latency metrics across all clients
+- visualize maximum or average latency over time
+
+### Example usage
+
+Inside `plot_latency.py`, the default main block plots four individual client logs and then computes an aggregate metric across the full `logs/` folder:
+
+Run it with:
+
+```bash
+python plot_latency.py
+```
+
+### Available metric helpers
+
+The script includes several metric functions:
+
+- `max_latency_nan` — maximum latency per frame, ignoring missing values
+- `mean_latency_nan` — mean latency per frame, ignoring missing values
+- `mean_latency_strict` — mean latency per frame, requiring all values
+- `max_latency_strict` — maximum latency per frame, requiring all values
+
+These can be passed into `plot_metric_across_folder()` depending on the analysis being performed.
+

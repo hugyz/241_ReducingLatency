@@ -49,6 +49,37 @@ Arguments:
 <node_name> <upstream_addr> <listen_port> <delay_config.json> <upstream_node_name>
 ```
 
+### Running Multiple Clients
+
+For load testing and repeatable experiments, the project includes a helper script that launches multiple game clients automatically.
+
+```
+run_clients.sh
+```
+
+Run with the default of 8 clients:
+
+```bash
+./run_clients.sh
+```
+
+Run with a custom number of clients:
+
+```bash
+./run_clients.sh 16
+```
+
+The script automatically:
+
+- assigns the first half of clients to region `A`
+- assigns the second half to region `B`
+- cycles colour indices as needed
+- runs the simulation for 30 seconds
+- terminates all spawned clients at the end of the test
+
+This is useful for scalability experiments, repeatable latency tests, and collecting larger log sets without manually launching each client.
+
+
 ## Main Server Behavior
 
 The main server currently handles these message types:
@@ -184,3 +215,34 @@ main → client     (simulated by main)
 ```
 
 This avoids double-counting delays and keeps the simulation consistent.
+
+## Plotting Latency Logs
+
+Latency logs recorded by the clients can be visualized using `plot_latency.py`. This script supports both per-client latency plots and aggregate latency plots across all client CSV files in a folder.
+
+The script reads client CSV logs, aligns them onto a common timeline, computes latency metrics, and plots the results using `matplotlib`.
+
+### Features
+
+- plot all connection latencies for a single client log
+- align multiple client logs to a common framerate
+- compute aggregate latency metrics across all clients
+- visualize maximum or average latency over time
+
+
+Run it with:
+
+```bash
+python plot_latency.py
+```
+
+### Available metric helpers
+
+The script includes several metric functions:
+
+- `max_latency_nan` — maximum latency per frame, ignoring missing values
+- `mean_latency_nan` — mean latency per frame, ignoring missing values
+- `mean_latency_strict` — mean latency per frame, requiring all values
+- `max_latency_strict` — maximum latency per frame, requiring all values
+
+These can be passed into `plot_metric_across_folder()` depending on the analysis being performed.
