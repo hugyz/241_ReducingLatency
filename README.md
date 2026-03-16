@@ -195,6 +195,35 @@ the procedurally generated map layout.
   7 = Pink
   8 = White
 
+## Running Multiple Clients
+
+For load testing and repeatable experiments, the project includes a helper script that launches multiple game clients automatically.
+
+### Usage
+
+Run with the default of 8 clients:
+
+```bash
+./run_clients.sh
+```
+
+Run with a custom number of clients:
+
+```bash
+./run_clients.sh 16
+```
+
+The script automatically:
+
+- assigns the first half of clients to region `A`
+- assigns the second half to region `B`
+- cycles colour indices as needed
+- runs the simulation for 30 seconds
+- terminates all spawned clients at the end of the test
+
+This is useful for scalability experiments, repeatable latency tests, and collecting larger log sets without manually launching each client.
+
+
 ---
 
 ## Example Scenarios
