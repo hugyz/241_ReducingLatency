@@ -1,6 +1,7 @@
-# WARZONE — Multiplayer Top-Down Shooter
+# WARZONE - Multiplayer Top-Down Shooter
 
-A networked multiplayer arena shooter with simulated regional latency, built with a Python game client (pygame) and Go edge/main server infrastructure.
+A networked multiplayer arena shooter with simulated regional latency,
+built with a Python game client (pygame) and Go edge/main server infrastructure.
 
 ---
 
@@ -22,26 +23,29 @@ A networked multiplayer arena shooter with simulated regional latency, built wit
 
 ## Prerequisites
 
-- **Go** 1.23+
-- **Python** 3.10+
-- Python packages: `pygame`, `pandas`
+- Go 1.23+
+- Python 3.10+
+- Python packages: pygame, pandas
 
 Install Python dependencies:
-```
-pip install pygame pandas
-```
+
+    pip install pygame pandas
 
 ---
 
 ## Architecture Overview
 
-```
-client → edge → main → edge → client
-```
+    client -> edge -> main -> edge -> client
 
-The **main server** is the authoritative hub. It holds a registry of all connected clients and which edge node each one registered through. **Edge servers** are regional relay nodes — they sit between clients and the main server, simulating realistic one-way propagation delay on every hop. Clients that connect directly to the main server are handled entirely by it.
+The main server is the authoritative hub. It holds a registry of all connected
+clients and which edge node each one registered through. Edge servers are
+regional relay nodes -- they sit between clients and the main server,
+simulating realistic one-way propagation delay on every hop. Clients that
+connect directly to the main server are handled entirely by it.
 
-At connect time, the Python client pings all candidate endpoints (edge + main) and picks the one with the lowest median RTT. The main server is always included as a fallback candidate.
+At connect time, the Python client pings all candidate endpoints (edge + main)
+and picks the one with the lowest median RTT. The main server is always
+included as a fallback candidate.
 
 ---
 
@@ -49,12 +53,10 @@ At connect time, the Python client pings all candidate endpoints (edge + main) a
 
 Compile the Go servers:
 
-```bash
-cd edge
-make
-```
+    cd edge
+    make
 
-This produces two binaries: `main-server` and `edge-server`.
+This produces two binaries: main-server and edge-server.
 
 ---
 
@@ -62,303 +64,287 @@ This produces two binaries: `main-server` and `edge-server`.
 
 ### Main server
 
-```bash
-go run cmd/main-server <region> <listen_addr> <config.json>
-```
+    go run cmd/main-server <region> <listen_addr> <config.json>
 
-Example — main server in region `A`, listening on port 8000:
+Example -- main server in region A, listening on port 8000:
 
-```bash
-go run cmd/main-server A 127.0.0.1:8000 config.json
-```
+    go run cmd/main-server A 127.0.0.1:8000 config.json
 
 Or with the compiled binary:
 
-```bash
-./main-server A 127.0.0.1:8000 config.json
-```
+    ./main-server A 127.0.0.1:8000 config.json
 
 ### Edge server
 
-```bash
-go run cmd/edge-server <region> <main_server_port> <config.json>
-```
+    go run cmd/edge-server <region> <main_server_port> <config.json>
 
-Example — edge node in region `B`, connecting back to main on port 8000, listening on port 9001:
+Example -- edge node in region B, connecting back to main on port 8000,
+listening on port 9001:
 
-```bash
-go run cmd/edge-server B 127.0.0.1:8000 9001 config.json
-```
+    go run cmd/edge-server B 127.0.0.1:8000 9001 config.json
 
 Or with the compiled binary:
 
-```bash
-./edge-server B 127.0.0.1:8000 9001 config.json
-```
+    ./edge-server B 127.0.0.1:8000 9001 config.json
 
 ---
 
 ## Running the Game Client
 
-```bash
-python arena_game.py \
-  --edge <ip:port> \
-  --client-id <unique_id> \
-  --color <0-8> \
-  --main <main_host:port> \
-  --region <region> \
-  --map-seed <integer> \
-  --terrain <terrain> \
-  [--ai]
-```
+    python arena_game.py \
+      --edge <ip:port> \
+      --client-id <unique_id> \
+      --color <0-8> \
+      --main <main_host:port> \
+      --region <region> \
+      --map-seed <integer> \
+      --terrain <terrain> \
+      [--ai]
 
-**All players must use the same `--map-seed` and `--terrain`** — these determine the procedurally generated map layout.
+All players must use the same --map-seed and --terrain. These determine
+the procedurally generated map layout.
 
 ### Client arguments
 
-| Flag | Description | Example |
-|---|---|---|
-| `--client-id` | Unique player identifier | `p1`, `alice` |
-| `--edge` | Edge node or main server address | `127.0.0.1:8000` |
-| `--main` | Main server address (for discovery) | `127.0.0.1:8000` |
-| `--region` | Client's region (must match a key in config.json) | `A`, `B`, `Perth` |
-| `--color` | Player colour index (0–8) | `0` |
-| `--map-seed` | Shared map seed — must be the same for all players | `12345` |
-| `--terrain` | Map terrain type | `forest` |
-| `--ai` | Enable AI enemies | _(flag, no value)_ |
+  --client-id   Unique player identifier. Examples: p1, alice
+  --edge        Edge node or main server address. Example: 127.0.0.1:8000
+  --main        Main server address for discovery. Example: 127.0.0.1:8000
+  --region      Client region (must match a key in config.json). Example: A, B, Perth
+  --color       Player colour index 0-8 (see table below)
+  --map-seed    Shared map seed -- must be the same for all players
+  --terrain     Map terrain type: forest, desert, urban, snow, volcano
+  --ai          Flag. Enables AI enemies.
 
 ### Colour index reference
 
-| Index | Colour |
-|---|---|
-| 0 | Green |
-| 1 | Blue |
-| 2 | Red |
-| 3 | Purple |
-| 4 | Orange |
-| 5 | Cyan |
-| 6 | Yellow |
-| 7 | Pink |
-| 8 | White |
+  0 = Green
+  1 = Blue
+  2 = Red
+  3 = Purple
+  4 = Orange
+  5 = Cyan
+  6 = Yellow
+  7 = Pink
+  8 = White
 
 ---
 
 ## Example Scenarios
 
-All examples below assume you have built the binaries with `make` inside `./edge/`.
+All examples below assume you have built the binaries with `make` inside ./edge/.
 
 ### Minimal local 1v1 (no edge node)
 
-Both players connect directly to the main server — no simulated regional latency.
+Both players connect directly to the main server. No simulated regional latency.
 
-```bash
-# Terminal 1 — main server
-./main-server A 127.0.0.1:8000 config.json
+    # Terminal 1 - main server
+    ./main-server A 127.0.0.1:8000 config.json
 
-# Terminal 2 — Player 1
-python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 0
+    # Terminal 2 - Player 1
+    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 0
 
-# Terminal 3 — Player 2
-python arena_game.py --client-id p2 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 1
-```
+    # Terminal 3 - Player 2
+    python arena_game.py --client-id p2 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 1
 
 ---
 
 ### Two-region local experiment (edge routing)
 
-Simulates players in different regions, routed through an edge node. Adjust `config.json` to set the desired latency between `A` and `B`.
+Simulates players in different regions, routed through an edge node.
+Adjust config.json to set the desired latency between A and B.
 
-```bash
-# Terminal 1 — main server in region A
-./main-server A 127.0.0.1:8000 config.json
+    # Terminal 1 - main server in region A
+    ./main-server A 127.0.0.1:8000 config.json
 
-# Terminal 2 — edge server in region B
-./edge-server B 127.0.0.1:8000 9001 config.json
+    # Terminal 2 - edge server in region B
+    ./edge-server B 127.0.0.1:8000 9001 config.json
 
-# Terminal 3 — Player 1 (region A, direct to main)
-python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 0
+    # Terminal 3 - Player 1 (region A, direct to main)
+    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 0
 
-# Terminal 4 — Player 2 (region B, through edge)
-python arena_game.py --client-id p2 --edge 127.0.0.1:9001 --main 127.0.0.1:8000 --region B --color 1
-```
+    # Terminal 4 - Player 2 (region B, through edge)
+    python arena_game.py --client-id p2 --edge 127.0.0.1:9001 \
+      --main 127.0.0.1:8000 --region B --color 1
 
 ---
 
 ### Perth/Sydney geographic experiment
 
-A realistic intercity scenario. Set `A` = Sydney (main server region) and `B` = Perth (edge region) in `config.json`, with latency values reflecting real cross-country RTT (~70 ms one-way).
+Simulates intercity latency (~70 ms one-way). The main server represents
+Sydney; the edge node represents Perth. Update config.json with region names
+"Sydney" and "Perth" and set the delay values accordingly (see the
+config.json section below). The main server routes Perth clients to the
+Perth edge and retains Sydney clients directly.
 
-```bash
-# Terminal 1 — main server (Sydney)
-./main-server Sydney 127.0.0.1:8000 config.json
+    # Terminal 1 - main server (Sydney)
+    ./main-server Sydney 127.0.0.1:8000 config.json
 
-# Terminal 2 — edge node (Perth)
-./edge-server Perth 127.0.0.1:8000 9001 config.json
+    # Terminal 2 - edge node (Perth)
+    ./edge-server Perth 127.0.0.1:8000 9001 config.json
 
-# Sydney players (direct to main)
-python arena_game.py --client-id sydney1 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region Sydney --color 0
-python arena_game.py --client-id sydney2 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region Sydney --color 1
+    # Sydney players (direct to main)
+    python arena_game.py --client-id sydney1 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region Sydney --color 0
+    python arena_game.py --client-id sydney2 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region Sydney --color 1
 
-# Perth players (through edge)
-python arena_game.py --client-id perth1 --edge 127.0.0.1:9001 --main 127.0.0.1:8000 --region Perth --color 2
-python arena_game.py --client-id perth2 --edge 127.0.0.1:9001 --main 127.0.0.1:8000 --region Perth --color 3
-```
+    # Perth players (through edge)
+    python arena_game.py --client-id perth1 --edge 127.0.0.1:9001 \
+      --main 127.0.0.1:8000 --region Perth --color 2
+    python arena_game.py --client-id perth2 --edge 127.0.0.1:9001 \
+      --main 127.0.0.1:8000 --region Perth --color 3
 
 ---
 
-### Four-player AI brawl on a volcano map
+### Four-player AI brawl on volcano terrain
 
-Single server, AI enemies enabled, unusual seed for a different map layout:
+Single server, AI enemies enabled, custom seed for a different layout.
 
-```bash
-# Terminal 1
-./main-server A 127.0.0.1:8000 config.json
+    # Terminal 1
+    ./main-server A 127.0.0.1:8000 config.json
 
-# Terminals 2–5
-python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 0 --map-seed 99999 --terrain volcano --ai
-python arena_game.py --client-id p2 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 2 --map-seed 99999 --terrain volcano --ai
-python arena_game.py --client-id p3 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 4 --map-seed 99999 --terrain volcano --ai
-python arena_game.py --client-id p4 --edge 127.0.0.1:8000 --main 127.0.0.1:8000 --region A --color 6 --map-seed 99999 --terrain volcano --ai
-```
+    # Terminals 2-5
+    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 0 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p2 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 2 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p3 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 4 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p4 --edge 127.0.0.1:8000 \
+      --main 127.0.0.1:8000 --region A --color 6 --map-seed 99999 --terrain volcano --ai
 
 ---
 
 ### High-latency stress test
 
-To observe the effects of bad network conditions, set large delay values in `config.json` (e.g. 200 ms) and run the standard two-region setup. The HUD's `PING` indicator will turn red above 80 ms, and you can observe prediction/rollback behaviour.
+Set large delay values in config.json (e.g. 200 ms) and run the two-region
+setup. The HUD PING indicator turns yellow above 30 ms and red above 80 ms.
+Use this to observe the effects of bad network conditions on prediction and
+rollback behaviour.
 
 ---
 
 ## Configuring Latency via config.json
 
-`config.json` is a **delay matrix** — a nested JSON object where each key is a region name and its value is a map of destination regions to **one-way delay in milliseconds**.
+config.json is a delay matrix -- a nested JSON object where each key is a
+region name and its value maps destination region names to one-way delay
+in milliseconds.
 
 ### Format
 
-```json
-{
-    "RegionA": {
-        "RegionA": <ms>,
-        "RegionB": <ms>
-    },
-    "RegionB": {
-        "RegionA": <ms>,
-        "RegionB": <ms>
+    {
+        "RegionA": {
+            "RegionA": <ms>,
+            "RegionB": <ms>
+        },
+        "RegionB": {
+            "RegionA": <ms>,
+            "RegionB": <ms>
+        }
     }
-}
-```
 
-Every region that will be used — either as a server region or a client `--region` argument — must appear as a top-level key. The value `from[A][B]` is the **one-way simulated delay** when a packet travels from a node in region `A` to a node in region `B`.
+Every region used as a server region or as a client --region argument must
+appear as a top-level key. The value matrix[A][B] is the one-way simulated
+delay when a packet travels from a node in region A to a node in region B.
+If a pair is missing, the delay defaults to zero.
 
-### Default (near-zero, same-machine)
+### Default (near-zero, same machine)
 
-```json
-{
-    "A": {
-        "A": 5,
-        "B": 5
-    },
-    "B": {
-        "A": 5,
-        "B": 5
+    {
+        "A": {
+            "A": 5,
+            "B": 5
+        },
+        "B": {
+            "A": 5,
+            "B": 5
+        }
     }
-}
-```
 
-### Perth/Sydney example (~70 ms one-way cross-country)
+### Perth/Sydney (~70 ms one-way)
 
-```json
-{
-    "Sydney": {
-        "Sydney": 5,
-        "Perth":  70
-    },
-    "Perth": {
-        "Sydney": 70,
-        "Perth":  5
+    {
+        "Sydney": {
+            "Sydney": 5,
+            "Perth":  70
+        },
+        "Perth": {
+            "Sydney": 70,
+            "Perth":  5
+        }
     }
-}
-```
 
-### EU/US/Asia three-region example
+### Three-region EU/US/Asia example
 
-```json
-{
-    "EU": {
-        "EU":   10,
-        "US":   90,
-        "Asia": 150
-    },
-    "US": {
-        "EU":   90,
-        "US":   10,
-        "Asia": 180
-    },
-    "Asia": {
-        "EU":   150,
-        "US":   180,
-        "Asia": 10
+    {
+        "EU": {
+            "EU":   10,
+            "US":   90,
+            "Asia": 150
+        },
+        "US": {
+            "EU":   90,
+            "US":   10,
+            "Asia": 180
+        },
+        "Asia": {
+            "EU":   150,
+            "US":   180,
+            "Asia": 10
+        }
     }
-}
-```
 
 ### How delays are applied
 
-The delay simulation is split across hops to avoid double-counting:
+Delays are split across hops to avoid double-counting:
 
-```
-client → edge       simulated by edge server
-edge → main         simulated by edge server
-main → edge         simulated by main server
-edge → client       simulated by edge server
+    client -> edge      simulated by edge server
+    edge -> main        simulated by edge server
+    main -> edge        simulated by main server
+    edge -> client      simulated by edge server
 
-client → main       simulated by main server (direct connections only)
-main → client       simulated by main server (direct connections only)
-```
+    client -> main      simulated by main server (direct connections only)
+    main -> client      simulated by main server (direct connections only)
 
-The delay looked up is always `matrix[sender_region][receiver_region]`. If a pair is missing from the config, the delay defaults to zero.
-
-> **Tip:** To simulate asymmetric connections (e.g. upload slower than download), set different values for `A→B` vs `B→A`.
+To simulate asymmetric links (e.g. upload slower than download), set
+different values for A->B vs B->A.
 
 ---
 
 ## Controls
 
-| Key / Input | Action |
-|---|---|
-| `W A S D` | Move |
-| Mouse | Aim |
-| Left Mouse Button | Shoot |
-| `R` | Reload |
-| `1` – `7` | Switch weapon slot |
-| `E` | Pick up weapon crate |
-| `ESC` | Quit |
+  W A S D       Move
+  Mouse         Aim
+  Left click    Shoot
+  R             Reload
+  1 - 7         Switch weapon slot
+  E             Pick up weapon crate
+  ESC           Quit
 
 ---
 
 ## Weapons Reference
 
-| Slot | Name | Damage | Fire Rate | Ammo | Special |
-|---|---|---|---|---|---|
-| 1 | Pistol | 12 | 0.25 s | Unlimited | — |
-| 2 | SMG | 10 | 0.07 s | 45 | — |
-| 3 | Shotgun | 8 × 7 pellets | 0.55 s | 16 | — |
-| 4 | Rifle | 35 | 0.35 s | 20 | Piercing |
-| 5 | Flamethrower | 5 | 0.04 s | 100 | Flame |
-| 6 | Grenade Launcher | 50 | 0.80 s | 10 | Explosion |
-| 7 | Railgun | 100 | 1.20 s | 5 | Rail (instant) |
+  Slot 1  PISTOL           damage 12   fire rate 0.25s  ammo unlimited
+  Slot 2  SMG              damage 10   fire rate 0.07s  ammo 45
+  Slot 3  SHOTGUN          damage 8x7  fire rate 0.55s  ammo 16
+  Slot 4  RIFLE            damage 35   fire rate 0.35s  ammo 20   piercing
+  Slot 5  FLAMETHROWER     damage 5    fire rate 0.04s  ammo 100  flame
+  Slot 6  GRENADE LAUNCHER damage 50   fire rate 0.80s  ammo 10   explosion
+  Slot 7  RAILGUN          damage 100  fire rate 1.20s  ammo 5    instant
 
 ---
 
 ## Terrains
 
-| Value | Description |
-|---|---|
-| `forest` | Dense woodland — tight corridors |
-| `desert` | Open sands — long sightlines |
-| `urban` | City ruins — lots of cover |
-| `snow` | Frozen tundra — reduced fog |
-| `volcano` | Lava fields — narrow paths |
+  forest    Dense woodland -- tight corridors
+  desert    Open sands -- long sightlines
+  urban     City ruins -- lots of cover
+  snow      Frozen tundra -- reduced fog
+  volcano   Lava fields -- narrow paths
 
 ---
 
@@ -366,34 +352,30 @@ The delay looked up is always `matrix[sender_region][receiver_region]`. If a pai
 
 All messages are JSON-encoded UDP datagrams.
 
-| Field | Type | Description |
-|---|---|---|
-| `type` | string | `PING`, `PONG`, `DISCOVER`, `EDGE_LIST`, `REGISTER`, `PREDICTION`, `STATE_UPDATE`, `ROLLBACK` |
-| `client_id` | string | Originating client identifier |
-| `seq` | int | Monotonically increasing sequence number |
-| `timestamp_ms` | int64 | Unix timestamp in milliseconds at send time |
-| `payload` | object | Type-specific data (position, action, region, edge list, etc.) |
+  type            string   PING, PONG, DISCOVER, EDGE_LIST, REGISTER,
+                           PREDICTION, STATE_UPDATE, ROLLBACK
+  client_id       string   Originating client identifier
+  seq             int      Monotonically increasing sequence number
+  timestamp_ms    int64    Unix timestamp in milliseconds at send time
+  payload         object   Type-specific data
 
 ### PREDICTION payload
 
-```json
-{
-  "state": {
-    "x": 512.0,
-    "y": 384.0,
-    "angle": 1.57,
-    "hp": 85,
-    "weapon_idx": 2
-  },
-  "action": null
-}
-```
+    {
+      "state": {
+        "x": 512.0,
+        "y": 384.0,
+        "angle": 1.57,
+        "hp": 85,
+        "weapon_idx": 2
+      },
+      "action": null
+    }
 
-`action` can be `null` or one of:
+action can be null or one of:
 
-```json
-{ "type": "shoot", "bx": 520, "by": 390, "angle": 1.57, "weapon_idx": 2, "spread_seed": 42314 }
-{ "type": "hit",   "target_id": "p2", "damage": 12 }
-{ "type": "dead" }
-{ "type": "pickup", "crate_idx": 3 }
-```
+    { "type": "shoot", "bx": 520, "by": 390, "angle": 1.57,
+      "weapon_idx": 2, "spread_seed": 42314 }
+    { "type": "hit",    "target_id": "p2", "damage": 12 }
+    { "type": "dead" }
+    { "type": "pickup", "crate_idx": 3 }
