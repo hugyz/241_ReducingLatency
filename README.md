@@ -137,7 +137,7 @@ python arena_game.py \
 |---|---|---|
 | `--client-id` | Yes | Unique player identifier. Example: `p1`, `alice` |
 | `--edge` | Yes | Server address to connect to (main or edge). Example: `192.168.1.5:8000` |
-| `--region` | No | Client region — match a key in `config.json`. For latency testing purposes. Example: `A`, `Perth` |
+| `--region` | Yes | Client region — match a key in `config.json`. For latency testing purposes. Example: `A`, `Perth` |
 | `--color` | No | Player colour index `0–8` (default: `0`) |
 | `--ai` | No | Flag. Enables AI enemies |
 
