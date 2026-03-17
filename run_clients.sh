@@ -17,20 +17,41 @@ cleanup() {
   echo ""
   echo "Shutting down..."
 
-  # Kill Python clients
-  kill -9 "${CLIENT_PIDS[@]}" 2>/dev/null
-
-  # Kill Go server process trees (go run spawns a child binary, kill -9 misses it)
-  for pid in "${EDGE_PIDS[@]}" "$MAIN_PID"; do
-    [ -n "$pid" ] && taskkill //F //T //PID "$pid" 2>/dev/null
-  done
-
-  # Nuclear: kill anything still holding our edge ports
-  for addr in "${EDGE_ACTUAL_ADDRS[@]}" "${EDGE_ADDRS[@]}"; do
-    p="${addr##*:}"
-    pid=$(netstat -ano 2>/dev/null | grep "UDP.*:${p}[^0-9].*\*:\*" | awk '{print $5}' | tr -d '\r')
-    [ -n "$pid" ] && echo "  Force-killing PID $pid still on port $p..." && taskkill //F //PID "$pid" 2>/dev/null
-  done
+  if [[ "$OSTYPE" == "msys" || "$OSTYPE" == "cygwin" ]]; then
+    # ── Windows (Git Bash) ──
+    for pid in "${CLIENT_PIDS[@]}"; do
+      taskkill //F //T //PID "$pid" 2>/dev/null
+    done
+    for pid in "${EDGE_PIDS[@]}" "$MAIN_PID"; do
+      [ -n "$pid" ] && taskkill //F //T //PID "$pid" 2>/dev/null
+    done
+    taskkill //F //IM "go.exe" 2>/dev/null &
+    taskkill //F //IM "main-server.exe" 2>/dev/null &
+    taskkill //F //IM "edge-server.exe" 2>/dev/null &
+    wait
+    # Port-based cleanup
+    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "${EDGE_ADDRS[@]}" "$MAIN_ADDR"; do
+      [ -z "$addr" ] && continue
+      p="${addr##*:}"
+      netstat -ano 2>/dev/null | grep ":${p}[^0-9]" | awk '{print $5}' | tr -d '\r' | sort -u | while read pid; do
+        [ -n "$pid" ] && [ "$pid" != "0" ] && taskkill //F //PID "$pid" 2>/dev/null
+      done
+    done
+  else
+    # ── Linux/Mac ──
+    for pid in "${CLIENT_PIDS[@]}" "${EDGE_PIDS[@]}" "$MAIN_PID"; do
+      [ -n "$pid" ] && kill -9 "$pid" 2>/dev/null
+    done
+    pkill -9 -f "go run" 2>/dev/null
+    pkill -9 -f "main-server" 2>/dev/null
+    pkill -9 -f "edge-server" 2>/dev/null
+    # Port-based cleanup
+    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "${EDGE_ADDRS[@]}" "$MAIN_ADDR"; do
+      [ -z "$addr" ] && continue
+      p="${addr##*:}"
+      lsof -ti ":$p" 2>/dev/null | xargs -r kill -9 2>/dev/null
+    done
+  fi
 
   echo "All processes stopped."
   exit 0

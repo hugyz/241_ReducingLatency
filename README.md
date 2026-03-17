@@ -27,6 +27,9 @@ A networked multiplayer arena shooter with simulated regional latency, built wit
 - Go 1.23+
 - Python 3.10+
 - Python packages: `pygame`, `pandas`
+- A graphical display (pygame renders a game window)
+  - **Windows**: Works out of the box (used Git Bash)
+  - **Linux/Mac (local desktop)**: Works with a display server running
 
 ```bash
 pip install pygame pandas

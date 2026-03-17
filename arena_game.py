@@ -885,7 +885,11 @@ class NetworkClient:
 
         with self._lock:
             self.remote_states[source_id]      = payload
-            self.remote_latencies[source_id]   = latency_ms
+            
+            prev = self.remote_latencies.get(source_id, float('inf'))
+            if latency_ms < prev:
+                self.remote_latencies[source_id] = latency_ms
+
             self.remote_timestamps[source_id]  = send_ts
             action = payload.get("action")
             if action:
