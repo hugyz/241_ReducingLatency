@@ -267,7 +267,7 @@ Adjust config.json to set the desired latency between A and B.
 
 ### Perth/Sydney geographic experiment
 
-Simulates intercity latency (~45 ms one-way). The main server represents
+Simulates intercity latency (~46 ms one-way). The main server represents
 Sydney; the edge node represents Perth. Update config.json with region names
 "Sydney" and "Perth" and set the delay values accordingly (see the
 config.json section below). The main server routes Perth clients to the
@@ -350,15 +350,15 @@ If a pair is missing, the delay defaults to zero.
         }
     }
 
-### Perth/Sydney example (~45 ms one-way cross-country)
+### Perth/Sydney example (~46 ms one-way cross-country)
 
     {   
         "Sydney": {
             "Sydney": 5,
-            "Perth":  45
+            "Perth":  46
         },
         "Perth": {
-            "Sydney": 45,
+            "Sydney": 46,
             "Perth":  5
         }
     }
