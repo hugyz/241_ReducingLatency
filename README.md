@@ -439,12 +439,13 @@ different values for A->B vs B->A.
 
 All messages are JSON-encoded UDP datagrams.
 
-  type            string   PING, PONG, DISCOVER, EDGE_LIST, REGISTER,
-                           PREDICTION, STATE_UPDATE, ROLLBACK
-  client_id       string   Originating client identifier
-  seq             int      Monotonically increasing sequence number
-  timestamp_ms    int64    Unix timestamp in milliseconds at send time
-  payload         object   Type-specific data
+ | Field         | Type   | Description |
+|--------------|--------|------------|
+| type         | string | PING, PONG, DISCOVER, EDGE_LIST, REGISTER, PREDICTION, STATE_UPDATE, ROLLBACK |
+| client_id    | string | Originating client identifier |
+| seq          | int    | Monotonically increasing sequence number |
+| timestamp_ms | int64  | Unix timestamp in milliseconds at send time |
+| payload      | object | Type-specific data |
 
 ### PREDICTION payload
 
