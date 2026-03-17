@@ -1,6 +1,6 @@
 #!/bin/bash
 
-MAIN=192.168.1.74:52101
+MAIN=192.168.1.74:62214
 DURATION=30
 
 # Number of clients (default = 8)

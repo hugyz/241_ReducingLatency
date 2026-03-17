@@ -161,10 +161,9 @@ Servers should be started in the following order:
 ## Running the Game Client
 
     python arena_game.py \
-      --edge <ip:port> \
       --client-id <unique_id> \
-      --color <0-8> \
       --main <main_host:port> \
+      --color <0-8> \
       --region <region> \
       --map-seed <integer> \
       --terrain <terrain> \
@@ -176,7 +175,6 @@ the procedurally generated map layout.
 ### Client arguments
 
   --client-id   Unique player identifier. Examples: p1, alice
-  --edge        Edge node or main server address. Example: 127.0.0.1:8000 (not passed for edge node discovery from main server)
   --main        Main server address for discovery. Example: 127.0.0.1:8000
   --region      Client region (must match a key in config.json). Example: A, B, Perth
   --color       Player colour index 0-8 (see table below)

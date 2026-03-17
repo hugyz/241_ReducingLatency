@@ -47,7 +47,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="WARZONE multiplayer client")
     ap.add_argument("--main", default=None, help="main server host:port (for discovery)")
     ap.add_argument("--client-id", default="p1", help="unique player id")
-    ap.add_argument("--edge",      default="127.0.0.1:8000", help="edge node host:port")
+    ap.add_argument("--edge",      help="edge node host:port")
     ap.add_argument("--region", default="A", help="client region (A, B, etc) used for latency simulation")
     ap.add_argument("--color",     type=int, default=0, help="player color index 0-8")
     ap.add_argument("--map-seed",  type=int, default=12345, help="shared map seed (must match all players)")
@@ -729,14 +729,13 @@ def draw_hud(player, fps, kills, total, elapsed, remote_players, net_latency_ms)
 #  NETWORK CLIENT  (wraps UdpTransport, runs in background thread)
 # ══════════════════════════════════════════════════════════════════════════════
 class NetworkClient:
-    def __init__(self, client_id, edge_addr, region, main_addr=None):
+    def __init__(self, client_id, edge_addr, region):
         self.client_id  = client_id
-        self.edge_addr  = edge_addr   # (host, port)
-        self.edge_name = "main" # changed after discover/selection
+        self.edge_addr  = edge_addr   # changed after discover/selection finds a better edge
+        self.edge_name = "main" # changed after discover/selection finds a better edge
         self.region     = region
-        self.main_addr = main_addr or edge_addr  # add this line after self.region = region
+        # self.main_addr = main_addr or edge_addr  # add this line after self.region = region
         self.transport  = UdpTransport(bind_port=0)
-        self.server     = edge_addr
         self._seq       = 0
         self._seq_lock  = threading.Lock()
         self._running   = False
@@ -790,7 +789,7 @@ class NetworkClient:
 
         endpoints = [c["addr"] for c in candidates]
 
-        best_result, results = choose_best_endpoint(
+        best_result, _ = choose_best_endpoint(
             self.transport,
             endpoints,
             self.client_id,
@@ -798,14 +797,15 @@ class NetworkClient:
             n=7,
         )
 
-        self.server = best_result.addr
+        # assign the selected edge address and name
+        self.edge_addr = best_result.addr
 
         for c in candidates:
-            if c["addr"] == self.server:
+            if c["addr"] == self.edge_addr:
                 self.edge_name = c["name"]
                 break
 
-        print(f"[net] selected endpoint {self.edge_name} @ {self.server}")
+        print(f"[net] selected endpoint {self.edge_name} @ {self.edge_addr}")
 
         self._send_register()
 
@@ -822,7 +822,7 @@ class NetworkClient:
             payload={"region": self.region},
         )
 
-        self.transport.send(msg, self.main_addr) # main addr, rename
+        self.transport.send(msg, self.edge_addr) # main addr, rename
     
     def _on_edge_list(self, msg, addr):
         self._edges = msg.get("payload", {}).get("edges", [])
@@ -838,11 +838,11 @@ class NetworkClient:
             payload={
                 "region": self.region,
                 "registered_edge": self.edge_name,
-                "registered_edge_addr": f"{self.server[0]}:{self.server[1]}",
+                "registered_edge_addr": f"{self.edge_addr[0]}:{self.edge_addr[1]}",
             },
         )
 
-        self.transport.send(reg, self.server)
+        self.transport.send(reg, self.edge_addr)
         
     def send_state(self, player, tick, action=None):
         """Send PREDICTION with full player state + optional action."""
@@ -860,7 +860,7 @@ class NetworkClient:
         if action:
             payload["action"]=action
         msg=create_message(MessageType.PREDICTION.value,self.client_id,seq,payload=payload)
-        self.transport.send(msg,self.server)
+        self.transport.send(msg,self.edge_addr)
 
     def _on_prediction(self, msg, addr):
         source_id  = msg.get("client_id")
@@ -887,17 +887,26 @@ class NetworkClient:
     def _ping_loop(self):
         while self._running:
             _time.sleep(1.0)
-            seq=self._next_seq()
-            self._last_ping_seq=seq
-            self._last_ping_t=_time.time()
+
+            if not self._running:
+                break
+
+            seq = self._next_seq()
+            self._last_ping_seq = seq
+            self._last_ping_t = _time.time()
+
             msg = create_message(
                 MessageType.PING.value,
                 self.client_id,
                 seq,
                 payload={"region": self.region},
             )
-            self.transport.send(msg,self.server)
 
+            try:
+                self.transport.send(msg, self.edge_addr)
+            except Exception: # handle race with shutdown
+                break
+            
     def drain_states(self):
         with self._lock:
             states     = dict(self.remote_states)
@@ -944,8 +953,8 @@ def main():
     args=parse_args()
 
     # Parse edge address
-    host,port=args.edge.split(":")
-    edge_addr=(host,int(port))
+    # host,port=args.edge.split(":")
+    # edge_addr=(host,int(port))
 
     # Init map (same seed = same map for all players)
     CUR_TERRAIN=args.terrain
@@ -967,14 +976,14 @@ def main():
     color_counter=[args.color+1]
 
     # Network
-    main_addr = tuple(args.main.split(":")) if args.main else edge_addr
+    main_addr = tuple(args.main.split(":"))
     main_addr = (main_addr[0], int(main_addr[1]))
-    net=NetworkClient(args.client_id, edge_addr, region=args.region, main_addr=main_addr)
-    print(f"[warzone] connecting to edge {edge_addr} as {args.client_id!r} ...")
+    net=NetworkClient(args.client_id, main_addr, region=args.region)
+    print(f"[warzone] connecting to edge {main_addr} as {args.client_id!r} ...")
     net.connect()
     print(f"[warzone] connected.")
 
-    pygame.display.set_caption(f"WARZONE  — {args.client_id} @ {args.edge}")
+    pygame.display.set_caption(f"WARZONE  — {args.client_id} @ {args.main}")
     pygame.mouse.set_visible(False)
 
     tick=0
