@@ -18,6 +18,7 @@ built with a Python game client (pygame) and Go edge/main server infrastructure.
 - [Weapons Reference](#weapons-reference)
 - [Terrains](#terrains)
 - [Protocol Reference](#protocol-reference)
+- [Plotting Latency Logs](#plotting-latency-logs)
 
 ---
 
@@ -43,7 +44,7 @@ regional relay nodes -- they sit between clients and the main server,
 simulating realistic one-way propagation delay on every hop. Clients that
 connect directly to the main server are handled entirely by it.
 
-At connect time, the Python client pings all candidate endpoints (edge + main)
+Discovery: At connect time, the Python client pings all candidate endpoints (edge + main)
 and picks the one with the lowest median RTT. The main server is always
 included as a fallback candidate.
 
@@ -175,7 +176,7 @@ the procedurally generated map layout.
 ### Client arguments
 
   --client-id   Unique player identifier. Examples: p1, alice
-  --edge        Edge node or main server address. Example: 127.0.0.1:8000
+  --edge        Edge node or main server address. Example: 127.0.0.1:8000 (not passed for edge node discovery from main server)
   --main        Main server address for discovery. Example: 127.0.0.1:8000
   --region      Client region (must match a key in config.json). Example: A, B, Perth
   --color       Player colour index 0-8 (see table below)
@@ -213,6 +214,8 @@ Run with a custom number of clients:
 ./run_clients.sh 16
 ```
 
+Set the `MAIN` variable in the file to the main server address. Ex: `MAIN=192.168.1.74:52101`
+
 The script automatically:
 
 - assigns the first half of clients to region `A`
@@ -235,15 +238,13 @@ All examples below assume you have built the binaries with `make` inside ./edge/
 Both players connect directly to the main server. No simulated regional latency.
 
     # Terminal 1 - main server
-    ./main-server A 127.0.0.1:8000 config.json
+    ./main-server A config.json
 
     # Terminal 2 - Player 1
-    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 0
+    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0
 
     # Terminal 3 - Player 2
-    python arena_game.py --client-id p2 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 1
+    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region A --color 1
 
 ---
 
@@ -253,18 +254,16 @@ Simulates players in different regions, routed through an edge node.
 Adjust config.json to set the desired latency between A and B.
 
     # Terminal 1 - main server in region A
-    ./main-server A 127.0.0.1:8000 config.json
+    ./main-server A config.json
 
     # Terminal 2 - edge server in region B
     ./edge-server B 127.0.0.1:8000 9001 config.json
 
     # Terminal 3 - Player 1 (region A, direct to main)
-    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 0
+    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0
 
     # Terminal 4 - Player 2 (region B, through edge)
-    python arena_game.py --client-id p2 --edge 127.0.0.1:9001 \
-      --main 127.0.0.1:8000 --region B --color 1
+    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region B --color 1
 
 ---
 
@@ -277,22 +276,18 @@ config.json section below). The main server routes Perth clients to the
 Perth edge and retains Sydney clients directly.
 
     # Terminal 1 - main server (Sydney)
-    ./main-server Sydney  config.json
+    ./main-server Sydney config.json
 
     # Terminal 2 - edge node (Perth)
     ./edge-server Perth 127.0.0.1:8000 config.json
 
     # Sydney players (direct to main)
-    python arena_game.py --client-id sydney1 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region Sydney --color 0
-    python arena_game.py --client-id sydney2 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region Sydney --color 1
+    python arena_game.py --client-id sydney1 --main 127.0.0.1:8000 --region Sydney --color 0
+    python arena_game.py --client-id sydney2 --main 127.0.0.1:8000 --region Sydney --color 1
 
     # Perth players (through edge)
-    python arena_game.py --client-id perth1 --edge 127.0.0.1:9001 \
-      --main 127.0.0.1:8000 --region Perth --color 2
-    python arena_game.py --client-id perth2 --edge 127.0.0.1:9001 \
-      --main 127.0.0.1:8000 --region Perth --color 3
+    python arena_game.py --client-id perth1 --main 127.0.0.1:8000 --region Perth --color 2
+    python arena_game.py --client-id perth2 --main 127.0.0.1:8000 --region Perth --color 3
 
 ---
 
@@ -301,17 +296,13 @@ Perth edge and retains Sydney clients directly.
 Single server, AI enemies enabled, custom seed for a different layout.
 
     # Terminal 1
-    ./main-server A 127.0.0.1:8000 config.json
+    ./main-server A config.json
 
     # Terminals 2-5
-    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 0 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p2 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 2 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p3 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 4 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p4 --edge 127.0.0.1:8000 \
-      --main 127.0.0.1:8000 --region A --color 6 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region A --color 2 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p3 --main 127.0.0.1:8000 --region A --color 4 --map-seed 99999 --terrain volcano --ai
+    python arena_game.py --client-id p4 --main 127.0.0.1:8000 --region A --color 6 --map-seed 99999 --terrain volcano --ai
 
 ---
 
