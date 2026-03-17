@@ -1,7 +1,6 @@
-# WARZONE - Multiplayer Top-Down Shooter
+# WARZONE — Multiplayer Top-Down Shooter
 
-A networked multiplayer arena shooter with simulated regional latency,
-built with a Python game client (pygame) and Go edge/main server infrastructure.
+A networked multiplayer arena shooter with simulated regional latency, built with a Python game client (pygame) and Go edge/main server infrastructure.
 
 ---
 
@@ -12,8 +11,9 @@ built with a Python game client (pygame) and Go edge/main server infrastructure.
 - [Build](#build)
 - [Running the Servers](#running-the-servers)
 - [Running the Game Client](#running-the-game-client)
+- [Running Multiple Clients](#running-multiple-clients)
 - [Example Scenarios](#example-scenarios)
-- [Configuring Latency via config.json](#configuring-latency-via-configjson)
+- [Configuring Latency](#configuring-latency-via-configjson)
 - [Controls](#controls)
 - [Weapons Reference](#weapons-reference)
 - [Terrains](#terrains)
@@ -26,412 +26,366 @@ built with a Python game client (pygame) and Go edge/main server infrastructure.
 
 - Go 1.23+
 - Python 3.10+
-- Python packages: pygame, pandas
+- Python packages: `pygame`, `pandas`
 
-Install Python dependencies:
-
-    pip install pygame pandas
+```bash
+pip install pygame pandas
+```
 
 ---
 
 ## Architecture Overview
 
-    client -> edge -> main -> edge -> client
+```
+client -> edge -> main -> client
+```
 
-The main server is the authoritative hub. It holds a registry of all connected
-clients and which edge node each one registered through. Edge servers are
-regional relay nodes -- they sit between clients and the main server,
-simulating realistic one-way propagation delay on every hop. Clients that
-connect directly to the main server are handled entirely by it.
+The main server is the authoritative hub. It holds a registry of all connected clients and which edge node each one registered through. Edge servers are regional relay nodes — they sit between clients and the main server, simulating realistic one-way propagation delay on every hop. Clients that connect directly to the main server are handled entirely by it.
 
-Discovery: At connect time, the Python client pings all candidate endpoints (edge + main)
-and picks the one with the lowest median RTT. The main server is always
-included as a fallback candidate.
+**Discovery:** At connect time, the Python client pings all candidate endpoints (edge + main) and picks the one with the lowest median RTT. The main server is always included as a fallback candidate.
 
 ---
 
 ## Build
 
-Compile the Go servers:
+```bash
+cd edge
+make
+```
 
-    cd edge
-    make
-
-This produces two binaries: main-server and edge-server.
+This produces two binaries: `main-server` and `edge-server`.
 
 ---
 
 ## Running the Servers
 
-You can either run the servers directly using `go run`, or build the binaries first and run them.
+Servers must be started in this order:
 
----
+```
+1. Main server
+2. Edge servers (if any)
+3. Game clients
+```
 
 ### Main Server
 
-Run with Go:
-
-```
+```bash
+# With go run
 go run cmd/main-server <region> <config.json>
-```
 
-Example:
-
-```
-go run cmd/main-server A config.json
-```
-
-Or run the compiled binary:
-
-```
+# Or with compiled binary
 ./main-server <region> <config.json>
 ```
 
 Example:
 
-```
+```bash
 ./main-server A config.json
 ```
 
-The main server automatically binds to an available UDP port and prints the address it is listening on.
-
-Example output:
+The main server binds to an available UDP port and prints its address:
 
 ```
 --- A (Main Server) ---
 Listening on: 192.168.1.5:8000
 ```
 
-The printed address should be used by edge servers and clients when connecting.
+Use this printed address when starting edge servers.
 
 ---
 
 ### Edge Server
 
-Run with Go:
-
-```
+```bash
+# With go run
 go run cmd/edge-server <region> <main_host:port> <config.json>
-```
 
-Example:
-
-```
-go run cmd/edge-server B 127.0.0.1:8000 config.json
-```
-
-Or run the compiled binary:
-
-```
+# Or with compiled binary
 ./edge-server <region> <main_host:port> <config.json>
 ```
 
 Example:
 
-```
-./edge-server B 127.0.0.1:8000 config.json
+```bash
+./edge-server B 192.168.1.5:8000 config.json
 ```
 
-The edge server automatically binds to an available UDP port, registers itself with the main server, and begins relaying client traffic.
-
-Example output:
+The edge server binds to an available UDP port, registers with main, and begins relaying:
 
 ```
 --- B (Edge) ---
 Listening on: 192.168.1.5:9001
-Target: 127.0.0.1:8000
-```
-
-Edge servers act as regional relay nodes between clients and the main server.
-
----
-
-### Startup Order
-
-Servers should be started in the following order:
-
-```
-1. Main server
-2. Edge servers
-3. Game clients
+Target: 192.168.1.5:8000
 ```
 
 ---
 
 ## Running the Game Client
 
-    python arena_game.py \
-      --client-id <unique_id> \
-      --main <main_host:port> \
-      --color <0-8> \
-      --region <region> \
-      --map-seed <integer> \
-      --terrain <terrain> \
-      [--ai]
+```bash
+python arena_game.py \
+  --client-id <unique_id> \
+  --edge <host:port> \
+  --color <0-8> \
+  --region <region> \
+  [--ai]
+```
 
-All players must use the same --map-seed and --terrain. These determine
-the procedurally generated map layout.
+### Client Arguments
 
-### Client arguments
+| Argument | Required | Description |
+|---|---|---|
+| `--client-id` | Yes | Unique player identifier. Example: `p1`, `alice` |
+| `--edge` | Yes | Server address to connect to (main or edge). Example: `192.168.1.5:8000` |
+| `--region` | No | Client region — match a key in `config.json`. For latency testing purposes. Example: `A`, `Perth` |
+| `--color` | No | Player colour index `0–8` (default: `0`) |
+| `--ai` | No | Flag. Enables AI enemies |
 
-  --client-id   Unique player identifier. Examples: p1, alice
-  --main        Main server address for discovery. Example: 127.0.0.1:8000
-  --region      Client region (must match a key in config.json). Example: A, B, Perth
-  --color       Player colour index 0-8 (see table below)
-  --map-seed    Shared map seed -- must be the same for all players
-  --terrain     Map terrain type: forest, desert, urban, snow, volcano
-  --ai          Flag. Enables AI enemies.
+### Colour Index Reference
 
-### Colour index reference
+| Index | Colour |
+|---|---|
+| 0 | Green |
+| 1 | Blue |
+| 2 | Red |
+| 3 | Purple |
+| 4 | Orange |
+| 5 | Cyan |
+| 6 | Yellow |
+| 7 | Pink |
+| 8 | White |
 
-  0 = Green
-  1 = Blue
-  2 = Red
-  3 = Purple
-  4 = Orange
-  5 = Cyan
-  6 = Yellow
-  7 = Pink
-  8 = White
+---
 
 ## Running Multiple Clients
 
-For load testing and repeatable experiments, the project includes a helper script that launches multiple game clients automatically.
+For load testing and repeatable experiments, use `run_clients.sh` to launch multiple clients and servers automatically.
 
 ### Usage
 
-Run with the default of 8 clients:
-
 ```bash
-./run_clients.sh
+bash run_clients.sh <num_edges> <num_clients> [features...]
 ```
 
-Run with a custom number of clients:
+### Arguments
+
+| Argument | Description |
+|---|---|
+| `num_edges` | Number of edge servers to start |
+| `num_clients` | Number of game clients to spawn |
+| `features` | Optional flags (see table below) |
+
+### Feature Flags
+
+| Flag | Description |
+|---|---|
+| `color` | Assign each client a random colour instead of cycling sequentially |
+| `region` | Assign each client a random region instead of matching their server |
+| `seed` | Generate a shared random map seed so all clients share the same map layout |
+| `terrain` | Pick a random terrain type shared across all clients |
+| `ai` | Enable AI enemies for all clients |
+
+### Examples
 
 ```bash
-./run_clients.sh 16
+# 2 edge servers, 4 clients, AI enabled, random colours
+bash run_clients.sh 2 4 ai color
+
+# 1 edge server, 8 clients, shared map seed and terrain
+bash run_clients.sh 1 8 seed terrain
+
+# No edge servers, 2 clients (both connect to main directly)
+bash run_clients.sh 0 2
 ```
 
-Set the `MAIN` variable in the file to the main server address. Ex: `MAIN=192.168.1.74:52101`
+### What the script does
 
-The script automatically:
-
-- assigns the first half of clients to region `A`
-- assigns the second half to region `B`
-- cycles colour indices as needed
-- runs the simulation for 30 seconds
-- terminates all spawned clients at the end of the test
-
-This is useful for scalability experiments, repeatable latency tests, and collecting larger log sets without manually launching each client.
-
+1. Starts the main server and waits until it is listening
+2. Starts each edge server in order, waiting for each to come up before starting the next
+3. Waits until all edge servers have registered with main
+4. Spawns clients staggered 1 second apart, randomly distributed across available servers
+5. Runs for 300 seconds then shuts everything down cleanly
 
 ---
 
 ## Example Scenarios
 
-All examples below assume you have built the binaries with `make` inside ./edge/.
+All examples assume binaries have been built with `make` inside `./edge/`.
 
 ### Minimal local 1v1 (no edge node)
 
-Both players connect directly to the main server. No simulated regional latency.
+Both players connect directly to the main server. No simulated latency.
 
-    # Terminal 1 - main server
-    ./main-server A config.json
+```bash
+# Terminal 1
+./main-server A config.json
 
-    # Terminal 2 - Player 1
-    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0
+# Terminal 2
+python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --region A --color 0
 
-    # Terminal 3 - Player 2
-    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region A --color 1
+# Terminal 3
+python arena_game.py --client-id p2 --edge 127.0.0.1:8000 --region A --color 1
+```
 
 ---
 
 ### Two-region local experiment (edge routing)
 
-Simulates players in different regions, routed through an edge node.
-Adjust config.json to set the desired latency between A and B.
+Simulates players in different regions routed through an edge node. Adjust `config.json` to set the desired latency between A and B.
 
-    # Terminal 1 - main server in region A
-    ./main-server A config.json
+```bash
+# Terminal 1 — main server (region A)
+./main-server A config.json
 
-    # Terminal 2 - edge server in region B
-    ./edge-server B 127.0.0.1:8000 9001 config.json
+# Terminal 2 — edge server (region B)
+./edge-server B 127.0.0.1:8000 config.json
 
-    # Terminal 3 - Player 1 (region A, direct to main)
-    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0
+# Terminal 3 — Player 1 (region A, direct to main)
+python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --region A --color 0
 
-    # Terminal 4 - Player 2 (region B, through edge)
-    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region B --color 1
+# Terminal 4 — Player 2 (region B, through edge)
+python arena_game.py --client-id p2 --edge 127.0.0.1:<edge_port> --region B --color 1
+```
 
 ---
 
 ### Perth/Sydney geographic experiment
 
-Simulates intercity latency (~45 ms one-way). The main server represents
-Sydney; the edge node represents Perth. Update config.json with region names
-"Sydney" and "Perth" and set the delay values accordingly (see the
-config.json section below). The main server routes Perth clients to the
-Perth edge and retains Sydney clients directly.
+Simulates intercity latency (~45 ms one-way). Update `config.json` with regions `Sydney` and `Perth` and set delay values accordingly.
 
-    # Terminal 1 - main server (Sydney)
-    ./main-server Sydney config.json
+```bash
+# Terminal 1 — main server (Sydney)
+./main-server Sydney config.json
 
-    # Terminal 2 - edge node (Perth)
-    ./edge-server Perth 127.0.0.1:8000 config.json
+# Terminal 2 — edge node (Perth)
+./edge-server Perth 127.0.0.1:8000 config.json
 
-    # Sydney players (direct to main)
-    python arena_game.py --client-id sydney1 --main 127.0.0.1:8000 --region Sydney --color 0
-    python arena_game.py --client-id sydney2 --main 127.0.0.1:8000 --region Sydney --color 1
+# Sydney players
+python arena_game.py --client-id sydney1 --edge 127.0.0.1:8000 --region Sydney --color 0
+python arena_game.py --client-id sydney2 --edge 127.0.0.1:8000 --region Sydney --color 1
 
-    # Perth players (through edge)
-    python arena_game.py --client-id perth1 --main 127.0.0.1:8000 --region Perth --color 2
-    python arena_game.py --client-id perth2 --main 127.0.0.1:8000 --region Perth --color 3
+# Perth players
+python arena_game.py --client-id perth1 --edge 127.0.0.1:<edge_port> --region Perth --color 2
+python arena_game.py --client-id perth2 --edge 127.0.0.1:<edge_port> --region Perth --color 3
+```
 
 ---
 
-### Four-player AI brawl on volcano terrain
+### Four-player AI brawl (automated)
 
-Single server, AI enemies enabled, custom seed for a different layout.
-
-    # Terminal 1
-    ./main-server A config.json
-
-    # Terminals 2-5
-    python arena_game.py --client-id p1 --main 127.0.0.1:8000 --region A --color 0 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p2 --main 127.0.0.1:8000 --region A --color 2 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p3 --main 127.0.0.1:8000 --region A --color 4 --map-seed 99999 --terrain volcano --ai
-    python arena_game.py --client-id p4 --main 127.0.0.1:8000 --region A --color 6 --map-seed 99999 --terrain volcano --ai
+```bash
+bash run_clients.sh 0 4 ai color
+```
 
 ---
 
 ### High-latency stress test
 
-Set large delay values in config.json (e.g. 200 ms) and run the two-region
-setup. The HUD PING indicator turns yellow above 30 ms and red above 80 ms.
-Use this to observe the effects of bad network conditions on prediction and
-rollback behaviour.
+Set large delay values in `config.json` (e.g. `200` ms) and run the two-region setup. The HUD PING indicator turns yellow above 30 ms and red above 80 ms.
 
 ---
 
 ## Configuring Latency via config.json
 
-config.json is a delay matrix -- a nested JSON object where each key is a
-region name and its value maps destination region names to one-way delay
-in milliseconds.
+`config.json` is a delay matrix — a nested JSON object where each key is a region name and its value maps destination region names to one-way delay in milliseconds.
 
 ### Format
 
-    {
-        "RegionA": {
-            "RegionA": <ms>,
-            "RegionB": <ms>
-        },
-        "RegionB": {
-            "RegionA": <ms>,
-            "RegionB": <ms>
-        }
+```json
+{
+    "RegionA": {
+        "RegionA": 5,
+        "RegionB": 50
+    },
+    "RegionB": {
+        "RegionA": 50,
+        "RegionB": 5
     }
+}
+```
 
-Every region used as a server region or as a client --region argument must
-appear as a top-level key. The value matrix[A][B] is the one-way simulated
-delay when a packet travels from a node in region A to a node in region B.
-If a pair is missing, the delay defaults to zero.
+Every region used as a `--region` argument must appear as a top-level key. `matrix[A][B]` is the one-way simulated delay for a packet travelling from a node in region A to a node in region B. Missing pairs default to zero.
 
-### Default (near-zero, same machine)
+### Default (same machine, near-zero latency)
 
-    {
-        "A": {
-            "A": 5,
-            "B": 5
-        },
-        "B": {
-            "A": 5,
-            "B": 5
-        }
-    }
+```json
+{
+    "A": { "A": 5, "B": 5 },
+    "B": { "A": 5, "B": 5 }
+}
+```
 
-### Perth/Sydney example (~45 ms one-way cross-country)
+### Perth/Sydney (~45 ms one-way)
 
-    {   
-        "Sydney": {
-            "Sydney": 5,
-            "Perth":  45
-        },
-        "Perth": {
-            "Sydney": 45,
-            "Perth":  5
-        }
-    }
+```json
+{
+    "Sydney": { "Sydney": 5,  "Perth": 45 },
+    "Perth":  { "Sydney": 45, "Perth": 5  }
+}
+```
 
+### Three-region EU/US/Asia
 
-### Three-region EU/US/Asia example
-
-    {
-        "EU": {
-            "EU":   10,
-            "US":   90,
-            "Asia": 150
-        },
-        "US": {
-            "EU":   90,
-            "US":   10,
-            "Asia": 180
-        },
-        "Asia": {
-            "EU":   150,
-            "US":   180,
-            "Asia": 10
-        }
-    }
+```json
+{
+    "EU":   { "EU": 10,  "US": 90,  "Asia": 150 },
+    "US":   { "EU": 90,  "US": 10,  "Asia": 180 },
+    "Asia": { "EU": 150, "US": 180, "Asia": 10  }
+}
+```
 
 ### How delays are applied
 
-Delays are split across hops to avoid double-counting:
+| Hop | Simulated by |
+|---|---|
+| client → edge | edge server |
+| edge → main | edge server |
+| main → edge | main server |
+| edge → client | edge server |
+| client → main (direct) | main server |
+| main → client (direct) | main server |
 
-    client -> edge      simulated by edge server
-    edge -> main        simulated by edge server
-    main -> edge        simulated by main server
-    edge -> client      simulated by edge server
-
-    client -> main      simulated by main server (direct connections only)
-    main -> client      simulated by main server (direct connections only)
-
-To simulate asymmetric links (e.g. upload slower than download), set
-different values for A->B vs B->A.
+To simulate asymmetric links (upload slower than download), set different values for A→B vs B→A.
 
 ---
 
 ## Controls
 
-  W A S D       Move
-  Mouse         Aim
-  Left click    Shoot
-  R             Reload
-  1 - 7         Switch weapon slot
-  E             Pick up weapon crate
-  ESC           Quit
+| Key | Action |
+|---|---|
+| `W A S D` | Move |
+| Mouse | Aim |
+| Left click | Shoot |
+| `R` | Reload |
+| `1` – `7` | Switch weapon slot |
+| `E` | Pick up weapon crate |
+| `ESC` | Quit |
 
 ---
 
 ## Weapons Reference
 
-  Slot 1  PISTOL           damage 12   fire rate 0.25s  ammo unlimited
-  Slot 2  SMG              damage 10   fire rate 0.07s  ammo 45
-  Slot 3  SHOTGUN          damage 8x7  fire rate 0.55s  ammo 16
-  Slot 4  RIFLE            damage 35   fire rate 0.35s  ammo 20   piercing
-  Slot 5  FLAMETHROWER     damage 5    fire rate 0.04s  ammo 100  flame
-  Slot 6  GRENADE LAUNCHER damage 50   fire rate 0.80s  ammo 10   explosion
-  Slot 7  RAILGUN          damage 100  fire rate 1.20s  ammo 5    instant
+| Slot | Name | Damage | Fire Rate | Ammo | Special |
+|---|---|---|---|---|---|
+| 1 | PISTOL | 12 | 0.25s | Unlimited | — |
+| 2 | SMG | 10 | 0.07s | 45 | — |
+| 3 | SHOTGUN | 8 × 7 | 0.55s | 16 | — |
+| 4 | RIFLE | 35 | 0.35s | 20 | Piercing |
+| 5 | FLAMETHROWER | 5 | 0.04s | 100 | Flame |
+| 6 | GRENADE LAUNCHER | 50 | 0.80s | 10 | Explosion |
+| 7 | RAILGUN | 100 | 1.20s | 5 | Instant |
 
 ---
 
 ## Terrains
 
-  forest    Dense woodland -- tight corridors
-  desert    Open sands -- long sightlines
-  urban     City ruins -- lots of cover
-  snow      Frozen tundra -- reduced fog
-  volcano   Lava fields -- narrow paths
+| Terrain | Description |
+|---|---|
+| `forest` | Dense woodland — tight corridors |
+| `desert` | Open sands — long sightlines |
+| `urban` | City ruins — lots of cover |
+| `snow` | Frozen tundra — reduced fog radius |
+| `volcano` | Lava fields — narrow paths |
 
 ---
 
@@ -439,66 +393,54 @@ different values for A->B vs B->A.
 
 All messages are JSON-encoded UDP datagrams.
 
-  type            string   PING, PONG, DISCOVER, EDGE_LIST, REGISTER,
-                           PREDICTION, STATE_UPDATE, ROLLBACK
-  client_id       string   Originating client identifier
-  seq             int      Monotonically increasing sequence number
-  timestamp_ms    int64    Unix timestamp in milliseconds at send time
-  payload         object   Type-specific data
+| Field | Type | Description |
+|---|---|---|
+| `type` | string | `PING`, `PONG`, `DISCOVER`, `EDGE_LIST`, `REGISTER`, `PREDICTION`, `STATE_UPDATE`, `ROLLBACK` |
+| `client_id` | string | Originating client identifier |
+| `seq` | int | Monotonically increasing sequence number |
+| `timestamp_ms` | int64 | Unix timestamp in milliseconds at send time |
+| `payload` | object | Type-specific data |
 
 ### PREDICTION payload
 
-    {
-      "state": {
-        "x": 512.0,
-        "y": 384.0,
-        "angle": 1.57,
-        "hp": 85,
-        "weapon_idx": 2
-      },
-      "action": null
-    }
+```json
+{
+  "state": {
+    "x": 512.0,
+    "y": 384.0,
+    "angle": 1.57,
+    "hp": 85
+  },
+  "action": null
+}
+```
 
-action can be null or one of:
+`action` can be `null` or one of:
 
-    { "type": "shoot", "bx": 520, "by": 390, "angle": 1.57,
-      "weapon_idx": 2, "spread_seed": 42314 }
-    { "type": "hit",    "target_id": "p2", "damage": 12 }
-    { "type": "dead" }
-    { "type": "pickup", "crate_idx": 3 }
+```json
+{ "type": "shoot", "bx": 520, "by": 390, "angle": 1.57, "weapon_idx": 2, "spread_seed": 42314 }
+{ "type": "hit",   "target_id": "p2", "damage": 12 }
+{ "type": "dead" }
+{ "type": "pickup", "crate_idx": 3 }
+```
+
+---
 
 ## Plotting Latency Logs
 
-Latency logs recorded by the clients can be visualized using `plot_latency.py`. This script supports both per-client latency plots and aggregate latency plots across all client CSV files in a folder.
-
-
-The script reads client CSV logs, aligns them onto a common timeline, computes latency metrics, and plots the results using `matplotlib`.
-
-### Features
-
-- plot all connection latencies for a single client log
-- align multiple client logs to a common framerate
-- compute aggregate latency metrics across all clients
-- visualize maximum or average latency over time
-
-### Example usage
-
-Inside `plot_latency.py`, the default main block plots four individual client logs and then computes an aggregate metric across the full `logs/` folder:
-
-Run it with:
+Latency logs are recorded automatically by each client to `logs/<client_id>.csv`. Visualize them with `plot_latency.py`.
 
 ```bash
 python plot_latency.py
 ```
 
-### Available metric helpers
+### Available metric functions
 
-The script includes several metric functions:
+| Function | Description |
+|---|---|
+| `max_latency_nan` | Maximum latency per frame, ignoring missing values |
+| `mean_latency_nan` | Mean latency per frame, ignoring missing values |
+| `mean_latency_strict` | Mean latency per frame, requiring all clients present |
+| `max_latency_strict` | Maximum latency per frame, requiring all clients present |
 
-- `max_latency_nan` — maximum latency per frame, ignoring missing values
-- `mean_latency_nan` — mean latency per frame, ignoring missing values
-- `mean_latency_strict` — mean latency per frame, requiring all values
-- `max_latency_strict` — maximum latency per frame, requiring all values
-
-These can be passed into `plot_metric_across_folder()` depending on the analysis being performed.
-
+Pass any of these into `plot_metric_across_folder()` to control how aggregate latency is computed across the full `logs/` folder.

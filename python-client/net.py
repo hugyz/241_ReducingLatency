@@ -95,7 +95,14 @@ class UdpTransport:
         - dispatch to handlers by message type
         """
         while self._running:
-            item = self.recv_once()
+            try:
+                item = self.recv_once()
+            except ConnectionResetError:
+                # Windows UDP bug — ignore and continue
+                continue
+            except OSError:
+                # Socket closed or other issue — exit thread safely
+                break
             if not item:
                 continue
             msg, addr = item

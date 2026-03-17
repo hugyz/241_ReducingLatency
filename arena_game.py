@@ -1,27 +1,6 @@
 """
 WARZONE — Multiplayer Top-Down Shooter
 =======================================
-Run one instance per player. Each player connects through the edge node.
-
-Usage:
-    python arena_game.py --client-id p1 --edge 127.0.0.1:8000 --color 0
-    python arena_game.py --client-id p2 --edge 127.0.0.1:8000 --color 1
-
-Controls:
-    WASD        — Move
-    Mouse       — Aim
-    LMB         — Shoot
-    R           — Reload
-    1-7         — Switch weapon
-    E           — Pick up weapon crate
-    ESC         — Quit
-
-Multiplayer protocol:
-    PREDICTION payload carries: x, y, angle, hp, weapon_idx, action
-    action = None | {type: "shoot", bx, by, angle, weapon_idx, spread_seed}
-           | {type: "hit",   target_id, damage}
-           | {type: "dead"}
-           | {type: "pickup", crate_idx}
 """
 
 import argparse
@@ -30,31 +9,33 @@ import random
 import sys
 import threading
 import time as _time
+import os
 
 import pandas as pd
 import pygame
 
 # ── Try to import networking from python-client/ ───────────────────────────────
-import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "python-client"))
-from net import UdpTransport, choose_best_endpoint
-from protocol import MessageType, create_message, decode_message
+try:
+    from net import UdpTransport, choose_best_endpoint
+    from protocol import MessageType, create_message, decode_message
+except ImportError:
+    pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ARGUMENT PARSING  (done before pygame init so --help works cleanly)
+#  ARGUMENT PARSING 
 # ══════════════════════════════════════════════════════════════════════════════
 def parse_args():
     ap = argparse.ArgumentParser(description="WARZONE multiplayer client")
-    ap.add_argument("--main", default=None, help="main server host:port (for discovery)")
-    ap.add_argument("--client-id", default="p1", help="unique player id")
-    ap.add_argument("--edge",      help="edge node host:port")
-    ap.add_argument("--region", default="A", help="client region (A, B, etc) used for latency simulation")
-    ap.add_argument("--color",     type=int, default=0, help="player color index 0-8")
-    ap.add_argument("--map-seed",  type=int, default=12345, help="shared map seed (must match all players)")
+    ap.add_argument("--client-id", default="p1",          help="unique player id")
+    ap.add_argument("--edge",      default="127.0.0.1:8000", help="server host:port")
+    ap.add_argument("--color",     type=int, default=0,   help="player color index 0-8")
+    ap.add_argument("--region",    default="A",           help=argparse.SUPPRESS)
+    ap.add_argument("--map-seed",  type=int, default=12345, help=argparse.SUPPRESS)
     ap.add_argument("--terrain",   default="forest",
                     choices=["forest","desert","urban","snow","volcano"],
-                    help="map terrain (must match all players)")
-    ap.add_argument("--ai", action="store_true", help="enable AI enemies")
+                    help=argparse.SUPPRESS)
+    ap.add_argument("--ai",        action="store_true",   help="spawn AI enemies")
     return ap.parse_args()
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -62,7 +43,7 @@ def parse_args():
 # ══════════════════════════════════════════════════════════════════════════════
 pygame.init()
 
-W, H = 1024, 768
+W, H = 800, 600
 screen = pygame.display.set_mode((W, H))
 pygame.display.set_caption("WARZONE  — MULTIPLAYER")
 clock = pygame.time.Clock()
@@ -72,6 +53,9 @@ COLS  = 52
 ROWS  = 40
 MAP_W = COLS * TILE
 MAP_H = ROWS * TILE
+
+# DRAMATIC DEATH GLOBALS
+shake_intensity = 0
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 BG        = (14, 22, 12)
@@ -89,8 +73,6 @@ fnt_s   = pygame.font.SysFont("monospace", 12)
 fnt_m   = pygame.font.SysFont("monospace", 16, bold=True)
 fnt_l   = pygame.font.SysFont("monospace", 34, bold=True)
 fnt_xl  = pygame.font.SysFont("monospace", 52, bold=True)
-fnt_ti  = pygame.font.SysFont("monospace", 64, bold=True)
-fnt_btn = pygame.font.SysFont("monospace", 20, bold=True)
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TERRAIN THEMES
@@ -100,31 +82,26 @@ TERRAINS = {
         "name": "FOREST", "ground_a": (36,50,28), "ground_b": (42,57,33),
         "wall_lit": (72,65,48), "wall_drk": (42,38,28), "wall_hl": (92,84,62),
         "fog": (10,18,8), "bg": (14,22,12), "accent": (55,140,55),
-        "desc": "Dense woodland — tight corridors",
     },
     "desert": {
         "name": "DESERT", "ground_a": (75,65,42), "ground_b": (82,72,48),
         "wall_lit": (110,95,65), "wall_drk": (70,58,38), "wall_hl": (140,125,90),
         "fog": (25,20,10), "bg": (30,25,15), "accent": (200,170,80),
-        "desc": "Open sands — long sightlines",
     },
     "urban": {
         "name": "URBAN", "ground_a": (48,48,52), "ground_b": (55,55,60),
         "wall_lit": (85,82,90), "wall_drk": (45,43,50), "wall_hl": (110,105,120),
         "fog": (12,12,18), "bg": (18,18,25), "accent": (100,140,200),
-        "desc": "City ruins — lots of cover",
     },
     "snow": {
         "name": "SNOW", "ground_a": (170,175,180), "ground_b": (160,165,172),
         "wall_lit": (120,125,135), "wall_drk": (80,82,92), "wall_hl": (200,205,215),
         "fog": (40,42,50), "bg": (55,58,68), "accent": (130,180,220),
-        "desc": "Frozen tundra — reduced fog",
     },
     "volcano": {
         "name": "VOLCANO", "ground_a": (40,22,18), "ground_b": (50,28,22),
         "wall_lit": (65,35,25), "wall_drk": (35,18,12), "wall_hl": (95,50,30),
         "fog": (18,8,5), "bg": (22,10,8), "accent": (220,90,30),
-        "desc": "Lava fields — narrow paths",
     },
 }
 
@@ -132,24 +109,17 @@ TERRAINS = {
 #  WEAPONS
 # ══════════════════════════════════════════════════════════════════════════════
 WEAPONS = [
-    {"name":"PISTOL",      "fire_rate":0.25, "speed":12, "damage":12, "spread":0.05,
-     "max_ammo":999, "count":1, "b_size":3, "b_color":(255,230,70),  "special":"none",      "slot":1},
-    {"name":"SMG",         "fire_rate":0.07, "speed":13, "damage":10, "spread":0.12,
-     "max_ammo":45,  "count":1, "b_size":3, "b_color":(255,200,50),  "special":"none",      "slot":2},
-    {"name":"SHOTGUN",     "fire_rate":0.55, "speed":11, "damage":8,  "spread":0.25,
-     "max_ammo":16,  "count":7, "b_size":3, "b_color":(255,180,60),  "special":"none",      "slot":3},
-    {"name":"RIFLE",       "fire_rate":0.35, "speed":20, "damage":35, "spread":0.02,
-     "max_ammo":20,  "count":1, "b_size":4, "b_color":(200,255,200), "special":"pierce",    "slot":4},
-    {"name":"FLAMETHROWER","fire_rate":0.04, "speed":7,  "damage":5,  "spread":0.35,
-     "max_ammo":100, "count":2, "b_size":5, "b_color":(255,120,20),  "special":"flame",     "slot":5},
-    {"name":"GRENADE L.",  "fire_rate":0.80, "speed":8,  "damage":50, "spread":0.06,
-     "max_ammo":10,  "count":1, "b_size":6, "b_color":(120,220,80),  "special":"explode",   "slot":6},
-    {"name":"RAILGUN",     "fire_rate":1.20, "speed":40, "damage":100,"spread":0.0,
-     "max_ammo":5,   "count":1, "b_size":5, "b_color":(80,200,255),  "special":"rail",      "slot":7},
+    {"name":"PISTOL",      "fire_rate":0.25, "speed":12, "damage":12, "spread":0.05, "max_ammo":999, "count":1, "b_size":3, "b_color":(255,230,70),  "special":"none",      "slot":1},
+    {"name":"SMG",         "fire_rate":0.07, "speed":13, "damage":10, "spread":0.12, "max_ammo":45,  "count":1, "b_size":3, "b_color":(255,200,50),  "special":"none",      "slot":2},
+    {"name":"SHOTGUN",     "fire_rate":0.55, "speed":11, "damage":8,  "spread":0.25, "max_ammo":16,  "count":7, "b_size":3, "b_color":(255,180,60),  "special":"none",      "slot":3},
+    {"name":"RIFLE",       "fire_rate":0.35, "speed":20, "damage":35, "spread":0.02, "max_ammo":20,  "count":1, "b_size":4, "b_color":(200,255,200), "special":"pierce",    "slot":4},
+    {"name":"FLAMETHROWER","fire_rate":0.04, "speed":7,  "damage":5,  "spread":0.35, "max_ammo":100, "count":2, "b_size":5, "b_color":(255,120,20),  "special":"flame",     "slot":5},
+    {"name":"GRENADE L.",  "fire_rate":0.80, "speed":8,  "damage":50, "spread":0.06, "max_ammo":10,  "count":1, "b_size":6, "b_color":(120,220,80),  "special":"explode",   "slot":6},
+    {"name":"RAILGUN",     "fire_rate":1.20, "speed":40, "damage":100,"spread":0.0,  "max_ammo":5,   "count":1, "b_size":5, "b_color":(80,200,255),  "special":"rail",      "slot":7},
 ]
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PLAYER COLORS  (index shared between all clients via --color arg)
+#  PLAYER COLORS
 # ══════════════════════════════════════════════════════════════════════════════
 PLAYER_COLORS = [
     ("Green",  (85,175,85),   (50,115,50)),
@@ -281,6 +251,14 @@ def draw_map(surface, cx, cy):
     surface.blit(_ground, (0,0), (int(cx),int(cy),W,H))
     surface.blit(_wall_surf, (-int(cx),-int(cy)))
 
+def draw_death_stain(x, y):
+    global _ground
+    if _ground is None: return
+    for _ in range(12):
+        pos = (int(x + random.uniform(-25, 25)), int(y + random.uniform(-25, 25)))
+        size = random.randint(3, 8)
+        pygame.draw.circle(_ground, (60, 5, 5), pos, size)
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  CAMERA
 # ══════════════════════════════════════════════════════════════════════════════
@@ -335,15 +313,15 @@ def draw_particles(surface):
             pygame.draw.circle(surface,c,(int(sx),int(sy)),r)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  BULLET  (local simulation — same for local and remote shots)
+#  BULLET
 # ══════════════════════════════════════════════════════════════════════════════
 class Bullet:
     def __init__(self, x, y, angle, owner_id, weapon, is_local=True):
         self.x, self.y = x, y
         self.vx = math.cos(angle)*weapon["speed"]
         self.vy = math.sin(angle)*weapon["speed"]
-        self.owner_id  = owner_id   # client_id string
-        self.is_local  = is_local   # True = fired by this client
+        self.owner_id  = owner_id
+        self.is_local  = is_local
         self.alive     = True
         self.trail     = []
         self.damage    = weapon["damage"]
@@ -387,8 +365,19 @@ class WeaponCrate:
     def __init__(self,x,y,weapon_idx):
         self.x=x; self.y=y; self.weapon_idx=weapon_idx
         self.alive=True; self.bob=random.uniform(0,math.tau)
-    def update(self): self.bob+=0.05
+        self.respawn_timer = 0.0
+
+    def update(self, dt): 
+        if self.alive:
+            self.bob+=0.05
+        else:
+            self.respawn_timer -= dt
+            if self.respawn_timer <= 0:
+                self.alive = True
+                self.weapon_idx = random.randint(1, len(WEAPONS)-1)
+
     def draw(self,surface):
+        if not self.alive: return
         sx,sy=ws(self.x,self.y)
         if not(-30<sx<W+30 and -30<sy<H+30): return
         by=sy+math.sin(self.bob)*3
@@ -401,7 +390,8 @@ class WeaponCrate:
 #  LOCAL PLAYER
 # ══════════════════════════════════════════════════════════════════════════════
 class Player:
-    RADIUS=13; ACCEL=750.0; FRICTION=8.5; MAX_SPEED=290.0; MAX_HP=100
+    # 1.5x BUFF TO PLAYER SPEED & ACCELERATION 
+    RADIUS=13; ACCEL=1125.0; FRICTION=8.5; MAX_SPEED=435.0; MAX_HP=100
 
     def __init__(self, color_idx=0):
         self.x=TILE*3.0; self.y=TILE*3.0
@@ -461,7 +451,6 @@ class Player:
         self.hurt_flash=max(0.0,self.hurt_flash-dt)
 
     def shoot(self, bullets):
-        """Returns list of shot dicts to be networked, or empty list."""
         w=self.weapon
         shots=[]
         if self.fire_cd<=0 and self.ammo>0:
@@ -475,9 +464,7 @@ class Player:
             self.fire_cd=w["fire_rate"]; self.ammo-=1
             self.flash_t=0.06
             spawn_flash(bx,by,self.angle); spawn_shell(bx,by,self.angle)
-            shots.append({"type":"shoot","bx":bx,"by":by,
-                          "angle":self.angle,"weapon_idx":self.weapons[self.cur_weapon][0],
-                          "spread_seed":seed})
+            shots.append({"type":"shoot","bx":bx,"by":by, "angle":self.angle,"weapon_idx":self.weapons[self.cur_weapon][0],"spread_seed":seed})
         return shots
 
     def reload(self):
@@ -485,11 +472,19 @@ class Player:
         self.weapons[self.cur_weapon]=(idx,WEAPONS[idx]["max_ammo"])
 
     def take_hit(self,dmg):
+        global shake_intensity
+        was_alive = self.alive
         self.hp-=dmg; self.hurt_flash=0.18; spawn_blood(self.x,self.y,5)
-        if self.hp<=0:
+        shake_intensity = 4
+        
+        if self.hp<=0 and was_alive:
             self.hp=0; self.alive=False
             self.died_x=self.x; self.died_y=self.y
-            spawn_blood(self.x,self.y,20)
+            spawn_blood(self.x, self.y, 80)
+            draw_death_stain(self.x, self.y)
+            shake_intensity = 25
+            return True
+        return False
 
     def draw(self,surface):
         sx,sy=ws(self.x,self.y)
@@ -508,7 +503,7 @@ class Player:
         pygame.draw.line(surface,(230,225,200),(int(sx),int(sy)),(int(ex),int(ey)),2)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  REMOTE PLAYER  (rendered from network state)
+#  REMOTE PLAYER
 # ══════════════════════════════════════════════════════════════════════════════
 class RemotePlayer:
     RADIUS=13; MAX_HP=100
@@ -520,59 +515,90 @@ class RemotePlayer:
         self.col      = PLAYER_COLORS[color_idx % len(PLAYER_COLORS)][1]
         self.col_dark = PLAYER_COLORS[color_idx % len(PLAYER_COLORS)][2]
         self.latency_ms = 0
-        self.last_timestamp_ms = 0   # ← add this
+        self.last_tick = 0
         self.last_seen  = _time.time()
+        self._latency_samples = []
+        self._latency_last_update = 0.0
+        self._dead_confirmed = False   # once dead, stays dead until respawn packet
 
     def apply_state(self, payload, latency_ms, timestamp_ms):
-        # Reject stale updates
-        if timestamp_ms <= self.last_timestamp_ms:
-            return
-        self.last_timestamp_ms = timestamp_ms
+        tick = payload.get("tick", 0)
+        if tick <= self.last_tick: return
+        self.last_tick = tick
 
         state = payload.get("state", {})
-        self.x        = float(state.get("x", self.x))
-        self.y        = float(state.get("y", self.y))
-        self.angle    = float(state.get("angle", self.angle))
-        self.hp       = int(state.get("hp", self.hp))
-        self.alive    = self.hp > 0
-        self.latency_ms = latency_ms
-        self.last_seen  = _time.time()
+        self.x     = float(state.get("x", self.x))
+        self.y     = float(state.get("y", self.y))
+        self.angle = float(state.get("angle", self.angle))
+        hp         = int(state.get("hp", self.hp))
+
+        # Once confirmed dead, only a hp>0 packet with higher tick can revive
+        if self._dead_confirmed:
+            if hp > 0:
+                self._dead_confirmed = False   # respawned
+            else:
+                self.hp = 0
+                self.alive = False
+        else:
+            self.hp = hp
+            if self.hp <= 0:
+                self.hp = 0
+                self.alive = False
+                self._dead_confirmed = True
+            else:
+                self.alive = True
+
+        self.last_seen = _time.time()
+
+        # Smoothed latency — update display once per second
+        now = _time.time()
+        self._latency_samples.append(latency_ms)
+        if now - self._latency_last_update >= 1.0:
+            self.latency_ms = int(sum(self._latency_samples) / len(self._latency_samples))
+            self._latency_samples = []
+            self._latency_last_update = now
 
     def draw(self, surface):
+        sx, sy = ws(self.x, self.y)
+        on_screen = -20 < sx < W+20 and -20 < sy < H+20
+
         if not self.alive:
-            sx,sy=ws(self.x,self.y)
-            if -20<sx<W+20 and -20<sy<H+20:
-                r=self.RADIUS
-                pygame.draw.circle(surface,(80,20,20),(int(sx),int(sy)),r)
-                pygame.draw.line(surface,(160,40,40),(int(sx)-r+4,int(sy)-r+4),(int(sx)+r-4,int(sy)+r-4),3)
-                pygame.draw.line(surface,(160,40,40),(int(sx)+r-4,int(sy)-r+4),(int(sx)-r+4,int(sy)+r-4),3)
-                tag=fnt_s.render(f"{self.client_id} [KIA]",True,(160,60,60))
-                surface.blit(tag,(int(sx)-tag.get_width()//2,int(sy)-r-22))
-            return
-        sx,sy=ws(self.x,self.y)
-        if not(-20<sx<W+20 and -20<sy<H+20): return
+            if not on_screen: return   # dead and off screen — draw nothing
+            r = self.RADIUS
+            pygame.draw.circle(surface, (80,20,20), (int(sx),int(sy)), r)
+            pygame.draw.line(surface, (160,40,40),
+                (int(sx)-r+4, int(sy)-r+4), (int(sx)+r-4, int(sy)+r-4), 3)
+            pygame.draw.line(surface, (160,40,40),
+                (int(sx)+r-4, int(sy)-r+4), (int(sx)-r+4, int(sy)+r-4), 3)
+            tag = fnt_s.render(f"{self.client_id} [KIA]", True, (160,60,60))
+            surface.blit(tag, (int(sx)-tag.get_width()//2, int(sy)-r-22))
+            return   # hard return — never falls through to alive code
 
-        pygame.draw.circle(surface,(8,16,6),(int(sx)+3,int(sy)+4),self.RADIUS+2)
-        pygame.draw.circle(surface,self.col_dark,(int(sx),int(sy)),self.RADIUS)
-        pygame.draw.circle(surface,self.col,(int(sx),int(sy)),self.RADIUS-2)
-        hl=tuple(min(255,c+60) for c in self.col)
-        pygame.draw.circle(surface,hl,(int(sx),int(sy)),self.RADIUS-2,1)
+        if not on_screen: return   # alive but off screen
 
-        ex=sx+math.cos(self.angle)*(self.RADIUS+10)
-        ey=sy+math.sin(self.angle)*(self.RADIUS+10)
-        pygame.draw.line(surface,(200,195,170),(int(sx),int(sy)),(int(ex),int(ey)),5)
+        # ── Alive drawing only below this point ───────────────────────────────
+        pygame.draw.circle(surface, (8,16,6),     (int(sx)+3, int(sy)+4), self.RADIUS+2)
+        pygame.draw.circle(surface, self.col_dark, (int(sx),  int(sy)),   self.RADIUS)
+        pygame.draw.circle(surface, self.col,      (int(sx),  int(sy)),   self.RADIUS-2)
+        hl = tuple(min(255, c+60) for c in self.col)
+        pygame.draw.circle(surface, hl, (int(sx), int(sy)), self.RADIUS-2, 1)
 
-        # HP bar
-        bw=26; ratio=self.hp/self.MAX_HP
-        pygame.draw.rect(surface,(50,10,10),(int(sx)-bw//2,int(sy)-self.RADIUS-9,bw,4))
-        pygame.draw.rect(surface,HUD_R,    (int(sx)-bw//2,int(sy)-self.RADIUS-9,int(bw*ratio),4))
+        ex = sx + math.cos(self.angle)*(self.RADIUS+10)
+        ey = sy + math.sin(self.angle)*(self.RADIUS+10)
+        pygame.draw.line(surface, (200,195,170), (int(sx),int(sy)), (int(ex),int(ey)), 5)
 
-        # Name + latency tag
-        tag=fnt_s.render(f"{self.client_id} {self.latency_ms}ms",True,(220,220,180))
-        surface.blit(tag,(int(sx)-tag.get_width()//2,int(sy)-self.RADIUS-22))
+        if self.hp < self.MAX_HP:
+            bw = 26; ratio = self.hp / self.MAX_HP
+            pygame.draw.rect(surface, (50,10,10),
+                (int(sx)-bw//2, int(sy)-self.RADIUS-9, bw, 4))
+            pygame.draw.rect(surface, HUD_R,
+                (int(sx)-bw//2, int(sy)-self.RADIUS-9, int(bw*ratio), 4))
+
+        tag = fnt_s.render(f"{self.client_id} {self.latency_ms}ms", True, (220,220,180))
+        surface.blit(tag, (int(sx)-tag.get_width()//2, int(sy)-self.RADIUS-22))
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  AI ENEMY  (local-only, same as original)
+#  AI ENEMY
 # ══════════════════════════════════════════════════════════════════════════════
 class Enemy:
     RADIUS=11; ACCEL=340.0; FRICTION=7.5; MAX_SPEED=115.0; MAX_HP=40; SIGHT_R=300.0
@@ -582,13 +608,28 @@ class Enemy:
         self.hp=self.MAX_HP; self.alive=True; self.state="patrol"
         self.patrol_timer=0.0; self.patrol_angle=random.uniform(0,math.tau); self.alert=0.0
         self.fire_rate=random.uniform(1.2,2.2); self.fire_cd=random.uniform(0,self.fire_rate)
-        self.last_timestamp_ms = 0
 
-    def update(self,dt,player,bullets):
-        dx=player.x-self.x; dy=player.y-self.y; d=math.hypot(dx,dy) or 1
+    def update(self,dt,player,bullets, remote_players):
+        target_x, target_y = player.x, player.y
+        closest_d = 999999
+        if player.alive:
+            closest_d = math.hypot(player.x - self.x, player.y - self.y)
+            
+        for rp in remote_players.values():
+            if rp.alive:
+                d = math.hypot(rp.x - self.x, rp.y - self.y)
+                if d < closest_d:
+                    closest_d = d
+                    target_x, target_y = rp.x, rp.y
+                    
+        dx = target_x - self.x
+        dy = target_y - self.y
+        d = closest_d or 1
+
         self.angle=math.atan2(dy,dx)
         if d<self.SIGHT_R: self.state="shoot" if d<120 else "chase"; self.alert=0.4
         else: self.state="patrol"
+        
         if self.state=="chase": ax=(dx/d)*self.ACCEL; ay=(dy/d)*self.ACCEL
         elif self.state=="patrol":
             self.patrol_timer-=dt
@@ -609,6 +650,7 @@ class Enemy:
             self.y=ny
         else: self.vy*=-0.4; self.patrol_angle+=math.pi+random.uniform(-0.5,0.5)
         self.fire_cd=max(0,self.fire_cd-dt); self.alert=max(0,self.alert-dt)
+        
         if self.state=="shoot" and self.fire_cd<=0:
             spread=random.uniform(-0.10,0.10)
             bx=self.x+math.cos(self.angle)*(self.RADIUS+4)
@@ -637,7 +679,7 @@ class Enemy:
         pygame.draw.rect(surface,HUD_R,(int(sx)-bw//2,int(sy)-self.RADIUS-9,int(bw*ratio),4))
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  FOG OF WAR
+#  FOG OF WAR & HUD
 # ══════════════════════════════════════════════════════════════════════════════
 FOG_R=220
 _fog_surf=pygame.Surface((W,H),pygame.SRCALPHA)
@@ -654,104 +696,115 @@ def draw_fog(player):
         pygame.draw.circle(_fog_surf,(*fog_col,a),(sx,sy),ri)
     screen.blit(_fog_surf,(0,0))
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  HUD
-# ══════════════════════════════════════════════════════════════════════════════
 def draw_hud(player, fps, kills, total, elapsed, remote_players, net_latency_ms):
-    # Bottom-left panel
-    panel=pygame.Surface((280,145),pygame.SRCALPHA); panel.fill((5,12,5,180))
-    screen.blit(panel,(10,H-155))
-    hp_col=HUD_G if player.hp>50 else (HUD_Y if player.hp>25 else HUD_R)
-    screen.blit(fnt_s.render(f"HP  {player.hp:>3}/{player.MAX_HP}",True,HUD_W),(18,H-150))
-    pygame.draw.rect(screen,(40,40,40),(18,H-133,240,12))
-    pygame.draw.rect(screen,hp_col,(18,H-133,int(240*player.hp/player.MAX_HP),12))
-    pygame.draw.rect(screen,(80,80,80),(18,H-133,240,12),1)
+    LINE = 16   # pixels per line
+    MARGIN = 8
 
-    w=player.weapon
-    ammo_col=HUD_G if player.ammo>w["max_ammo"]//3 else (HUD_Y if player.ammo>3 else HUD_R)
-    astr="INF" if player.ammo==999 else f"{player.ammo:>3}/{w['max_ammo']}"
-    screen.blit(fnt_s.render(f"{w['name']}  {astr}  [R]=reload",True,ammo_col),(18,H-115))
+    # Count lines: HP, bar, weapon, slots, vel, pos, ping, then one per remote player
+    n_remotes = len(remote_players)
+    n_lines = 7 + n_remotes
+    panel_h = n_lines * LINE + MARGIN * 2
+    panel_y = H - panel_h - 8
+    tx = 18   # text x
 
-    slot_y=H-97
-    for i,(wi,ammo) in enumerate(player.weapons):
-        ww=WEAPONS[wi]; bc=ww["b_color"] if i==player.cur_weapon else (80,80,80)
-        screen.blit(fnt_s.render(f"[{ww['slot']}]{ww['name'][:4]}",True,bc),(18+i*55,slot_y))
+    panel = pygame.Surface((290, panel_h), pygame.SRCALPHA)
+    panel.fill((5, 12, 5, 180))
+    screen.blit(panel, (10, panel_y))
 
-    spd=math.hypot(player.vx,player.vy)
-    screen.blit(fnt_s.render(f"VEL {spd:>6.1f}px/s",True,(140,170,140)),(18,H-77))
-    screen.blit(fnt_s.render(f"POS ({int(player.x):>5},{int(player.y):>5})",True,(140,170,140)),(18,H-62))
+    y = panel_y + MARGIN
 
-    # Network latency
-    lat_col=HUD_G if net_latency_ms<30 else (HUD_Y if net_latency_ms<80 else HUD_R)
-    screen.blit(fnt_s.render(f"PING {net_latency_ms:>4}ms",True,lat_col),(18,H-47))
+    # HP
+    hp_col = HUD_G if player.hp > 50 else (HUD_Y if player.hp > 25 else HUD_R)
+    screen.blit(fnt_s.render(f"HP  {player.hp:>3}/{player.MAX_HP}", True, HUD_W), (tx, y)); y += LINE
+    pygame.draw.rect(screen, (40,40,40), (tx, y, 240, 8))
+    pygame.draw.rect(screen, hp_col,    (tx, y, int(240*player.hp/player.MAX_HP), 8))
+    pygame.draw.rect(screen, (80,80,80),(tx, y, 240, 8), 1)
+    y += 12
+
+    # Weapon + ammo
+    w = player.weapon
+    ammo_col = HUD_G if player.ammo > w["max_ammo"]//3 else (HUD_Y if player.ammo > 3 else HUD_R)
+    astr = "INF" if player.ammo == 999 else f"{player.ammo:>3}/{w['max_ammo']}"
+    screen.blit(fnt_s.render(f"{w['name']}  {astr}  [R]=reload", True, ammo_col), (tx, y)); y += LINE
+
+    # Weapon slots
+    for i, (wi, ammo) in enumerate(player.weapons):
+        ww = WEAPONS[wi]; bc = ww["b_color"] if i == player.cur_weapon else (80,80,80)
+        screen.blit(fnt_s.render(f"[{ww['slot']}]{ww['name'][:4]}", True, bc), (tx + i*55, y))
+    y += LINE
+
+    # Stats
+    spd = math.hypot(player.vx, player.vy)
+    screen.blit(fnt_s.render(f"VEL {spd:>6.1f}px/s", True, (140,170,140)), (tx, y)); y += LINE
+    screen.blit(fnt_s.render(f"POS ({int(player.x):>5},{int(player.y):>5})", True, (140,170,140)), (tx, y)); y += LINE
+
+    # Ping
+    lat_col = HUD_G if net_latency_ms < 30 else (HUD_Y if net_latency_ms < 80 else HUD_R)
+    screen.blit(fnt_s.render(f"PING {net_latency_ms:>4}ms", True, lat_col), (tx, y)); y += LINE
 
     # Remote player latencies
-    for i,(rid,rp) in enumerate(remote_players.items()):
-        lc=HUD_G if rp.latency_ms<30 else (HUD_Y if rp.latency_ms<80 else HUD_R)
-        screen.blit(fnt_s.render(f"{rid}: {rp.latency_ms}ms",True,lc),(18,H-30-i*14))
+    for rid, rp in remote_players.items():
+        lc = HUD_G if rp.latency_ms < 30 else (HUD_Y if rp.latency_ms < 80 else HUD_R)
+        screen.blit(fnt_s.render(f"{rid}: {rp.latency_ms}ms", True, lc), (tx, y)); y += LINE
 
-    # Kills top-left
-    kpanel=pygame.Surface((200,32),pygame.SRCALPHA); kpanel.fill((5,12,5,180))
-    screen.blit(kpanel,(10,10))
-    screen.blit(fnt_m.render(f"KILLS  {kills} / {total}",True,HUD_G),(16,14))
+    # Top-left kills
+    kpanel = pygame.Surface((200, 28), pygame.SRCALPHA); kpanel.fill((5,12,5,180))
+    screen.blit(kpanel, (10, 10))
+    screen.blit(fnt_m.render(f"KILLS  {kills} / {total}", True, HUD_G), (16, 13))
 
-    # FPS + time top-right
-    fps_col=HUD_G if fps>=55 else (HUD_Y if fps>=30 else HUD_R)
-    ppanel=pygame.Surface((180,52),pygame.SRCALPHA); ppanel.fill((5,12,5,180))
-    screen.blit(ppanel,(W-190,10))
-    screen.blit(fnt_m.render(f"FPS  {int(fps):>3}",True,fps_col),(W-184,14))
-    screen.blit(fnt_s.render(f"TIME {int(elapsed):>4}s",True,(140,170,140)),(W-184,38))
+    # Top-right FPS + time
+    fps_col = HUD_G if fps >= 55 else (HUD_Y if fps >= 30 else HUD_R)
+    ppanel = pygame.Surface((160, 48), pygame.SRCALPHA); ppanel.fill((5,12,5,180))
+    screen.blit(ppanel, (W-170, 10))
+    screen.blit(fnt_m.render(f"FPS {int(fps):>3}", True, fps_col), (W-164, 13))
+    screen.blit(fnt_s.render(f"TIME {int(elapsed):>4}s", True, (140,170,140)), (W-164, 35))
 
     # Crosshair
-    mx,my=pygame.mouse.get_pos(); sz=10
-    pygame.draw.line(screen,ammo_col,(mx-sz,my),(mx+sz,my),1)
-    pygame.draw.line(screen,ammo_col,(mx,my-sz),(mx,my+sz),1)
-    pygame.draw.circle(screen,ammo_col,(mx,my),5,1)
+    mx, my = pygame.mouse.get_pos(); sz = 10
+    pygame.draw.line(screen, ammo_col, (mx-sz, my), (mx+sz, my), 1)
+    pygame.draw.line(screen, ammo_col, (mx, my-sz), (mx, my+sz), 1)
+    pygame.draw.circle(screen, ammo_col, (mx, my), 5, 1)
 
-    # Minimap
-    mm_w,mm_h=140,int(140*ROWS/COLS); mm_x,mm_y=W-mm_w-10,68
-    mm_surf=pygame.Surface((mm_w,mm_h),pygame.SRCALPHA); mm_surf.fill((10,15,10,160))
-    sx_s=mm_w/COLS; sy_s=mm_h/ROWS
+    # Minimap — bottom right
+    mm_w, mm_h = 120, int(120*ROWS/COLS); mm_x, mm_y = W-mm_w-10, 62
+    mm_surf = pygame.Surface((mm_w, mm_h), pygame.SRCALPHA); mm_surf.fill((10,15,10,160))
+    sx_s = mm_w/COLS; sy_s = mm_h/ROWS
     for r in range(ROWS):
         for c in range(COLS):
-            if MAP[r][c]==1:
-                pygame.draw.rect(mm_surf,(60,60,55),(int(c*sx_s),int(r*sy_s),max(1,int(sx_s)),max(1,int(sy_s))))
-    px_mm=int(player.x/MAP_W*mm_w); py_mm=int(player.y/MAP_H*mm_h)
-    pygame.draw.circle(mm_surf,player.col,(px_mm,py_mm),3)
+            if MAP[r][c] == 1:
+                pygame.draw.rect(mm_surf, (60,60,55), (int(c*sx_s), int(r*sy_s), max(1,int(sx_s)), max(1,int(sy_s))))
+    px_mm = int(player.x/MAP_W*mm_w); py_mm = int(player.y/MAP_H*mm_h)
+    pygame.draw.circle(mm_surf, player.col, (px_mm, py_mm), 3)
     for rp in remote_players.values():
         if rp.alive:
-            rx_mm=int(rp.x/MAP_W*mm_w); ry_mm=int(rp.y/MAP_H*mm_h)
-            pygame.draw.circle(mm_surf,rp.col,(rx_mm,ry_mm),3)
-    pygame.draw.rect(mm_surf,(80,100,80),(0,0,mm_w,mm_h),1)
-    screen.blit(mm_surf,(mm_x,mm_y))
+            rx_mm = int(rp.x/MAP_W*mm_w); ry_mm = int(rp.y/MAP_H*mm_h)
+            pygame.draw.circle(mm_surf, rp.col, (rx_mm, ry_mm), 3)
+    pygame.draw.rect(mm_surf, (80,100,80), (0, 0, mm_w, mm_h), 1)
+    screen.blit(mm_surf, (mm_x, mm_y))
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  NETWORK CLIENT  (wraps UdpTransport, runs in background thread)
+#  NETWORK CLIENT
 # ══════════════════════════════════════════════════════════════════════════════
 class NetworkClient:
     def __init__(self, client_id, edge_addr, region):
         self.client_id  = client_id
-        self.edge_addr  = edge_addr   # changed after discover/selection finds a better edge
-        self.edge_name = "main" # changed after discover/selection finds a better edge
+        self.edge_addr  = edge_addr
+        self.edge_name  = "main"
         self.region     = region
-        # self.main_addr = main_addr or edge_addr  # add this line after self.region = region
         self.transport  = UdpTransport(bind_port=0)
+        self.server     = edge_addr
         self._seq       = 0
         self._seq_lock  = threading.Lock()
         self._running   = False
-        
         self._discover_event = threading.Event()
         self._edges = []
-
-        # Shared state written by recv thread, read by game thread
         self._lock               = threading.Lock()
-        self.remote_states       = {}   # client_id → latest payload dict
-        self.remote_latencies    = {}   # client_id → latency_ms
-        self.remote_timestamps   = {}   # 
-        self.pending_actions     = []   # list of action dicts to apply locally
+        self.remote_states       = {}
+        self.remote_latencies    = {}
+        self.remote_timestamps   = {}
+        self.pending_actions     = []
         self.ping_ms             = 0
 
-        # Register handlers
         self.transport.on(MessageType.PREDICTION.value, self._on_prediction)
         self.transport.on(MessageType.PONG.value,       self._on_pong)
         self.transport.on(MessageType.EDGE_LIST.value, self._on_edge_list)
@@ -768,7 +821,6 @@ class NetworkClient:
     def connect(self):
         self._running = True
         self.transport.start()
-
         self._edges = []
         self._discover_event.clear()
         self._send_discover()
@@ -776,53 +828,27 @@ class NetworkClient:
         if not self._discover_event.wait(timeout=20):
             raise RuntimeError("edge discovery failed")
 
-        candidates = []
-        for e in self._edges:
+        candidates = [{"name": e.get("name", ""), "addr": (e["host"], int(e["port"]))} for e in self._edges]
+        if not candidates: raise RuntimeError("no discovered edges")
 
-            candidates.append({
-                "name": e.get("name", ""),
-                "addr": (e["host"], int(e["port"])),
-            })
-
-        if not candidates:
-            raise RuntimeError("no discovered edges")
-
-        endpoints = [c["addr"] for c in candidates]
-
-        best_result, _ = choose_best_endpoint(
-            self.transport,
-            endpoints,
-            self.client_id,
-            self.region,
-            n=7,
+        best_result, results = choose_best_endpoint(
+            self.transport, endpoints=[c["addr"] for c in candidates], client_id=self.client_id, region=self.region, n=7
         )
 
-        # assign the selected edge address and name
-        self.edge_addr = best_result.addr
-
+        self.server = best_result.addr
         for c in candidates:
-            if c["addr"] == self.edge_addr:
-                self.edge_name = c["name"]
-                break
+            if c["addr"] == self.server:
+                self.edge_name = c["name"]; break
 
-        print(f"[net] selected endpoint {self.edge_name} @ {self.edge_addr}")
-
+        print(f"[net] selected endpoint {self.edge_name} @ {self.server}")
         self._send_register()
-
         t = threading.Thread(target=self._ping_loop, daemon=True)
         t.start()
         
     def _send_discover(self):
         seq = self._next_seq()
-
-        msg = create_message(
-            MessageType.DISCOVER.value,
-            self.client_id,
-            seq,
-            payload={"region": self.region},
-        )
-
-        self.transport.send(msg, self.edge_addr) # main addr, rename
+        msg = create_message(MessageType.DISCOVER.value, self.client_id, seq, payload={"region": self.region})
+        self.transport.send(msg, self.edge_addr)
     
     def _on_edge_list(self, msg, addr):
         self._edges = msg.get("payload", {}).get("edges", [])
@@ -830,37 +856,23 @@ class NetworkClient:
     
     def _send_register(self):
         seq = self._next_seq()
-
-        reg = create_message(
-            MessageType.REGISTER.value,
-            self.client_id,
-            seq,
-            payload={
-                "region": self.region,
-                "registered_edge": self.edge_name,
-                "registered_edge_addr": f"{self.edge_addr[0]}:{self.edge_addr[1]}",
-            },
-        )
-
-        self.transport.send(reg, self.edge_addr)
+        reg = create_message(MessageType.REGISTER.value, self.client_id, seq, payload={
+            "region": self.region, "registered_edge": self.edge_name, "registered_edge_addr": f"{self.server[0]}:{self.server[1]}"
+        })
+        self.transport.send(reg, self.server)
         
     def send_state(self, player, tick, action=None):
-        """Send PREDICTION with full player state + optional action."""
         seq=self._next_seq()
         payload={
             "tick": tick,
-            "state": {
-                "x":     player.x,
-                "y":     player.y,
-                "angle": player.angle,
-                "hp":    player.hp,
-            },
-            "input": {"dx":0,"dy":0},   # kept for protocol compat
+            "region": self.region, # FIX: Stops the Go Server from spamming "missing region field"
+            "state": {"x": player.x, "y": player.y, "angle": player.angle, "hp": player.hp},
+            "input": {"dx":0,"dy":0},
         }
-        if action:
-            payload["action"]=action
+        if action: payload["action"] = action
+            
         msg=create_message(MessageType.PREDICTION.value,self.client_id,seq,payload=payload)
-        self.transport.send(msg,self.edge_addr)
+        self.transport.send(msg,self.server)
 
     def _on_prediction(self, msg, addr):
         source_id  = msg.get("client_id")
@@ -869,13 +881,12 @@ class NetworkClient:
         latency_ms = now_ms - send_ts
         payload    = msg.get("payload", {})
 
-        if source_id is None or source_id == self.client_id:
-            return
+        if source_id is None or source_id == self.client_id: return
 
         with self._lock:
-            self.remote_states[source_id]              = payload
-            self.remote_latencies[source_id]           = latency_ms
-            self.remote_timestamps[source_id]          = send_ts   # ← add this
+            self.remote_states[source_id]      = payload
+            self.remote_latencies[source_id]   = latency_ms
+            self.remote_timestamps[source_id]  = send_ts
             action = payload.get("action")
             if action:
                 self.pending_actions.append({"source_id": source_id, "action": action, "latency_ms": latency_ms})
@@ -887,60 +898,52 @@ class NetworkClient:
     def _ping_loop(self):
         while self._running:
             _time.sleep(1.0)
-
-            if not self._running:
-                break
-
-            seq = self._next_seq()
-            self._last_ping_seq = seq
-            self._last_ping_t = _time.time()
-
-            msg = create_message(
-                MessageType.PING.value,
-                self.client_id,
-                seq,
-                payload={"region": self.region},
-            )
-
+            if not self._running: break
+            seq=self._next_seq()
+            self._last_ping_seq=seq
+            self._last_ping_t=_time.time()
+            msg = create_message(MessageType.PING.value, self.client_id, seq, payload={"region": self.region})
             try:
-                self.transport.send(msg, self.edge_addr)
-            except Exception: # handle race with shutdown
+                self.transport.send(msg,self.server)
+            except OSError:
                 break
-            
+
     def drain_states(self):
         with self._lock:
             states     = dict(self.remote_states)
             lats       = dict(self.remote_latencies)
-            timestamps = dict(self.remote_timestamps)   # ← add
+            timestamps = dict(self.remote_timestamps)
             actions    = list(self.pending_actions)
             self.pending_actions.clear()
-        return states, lats, timestamps, actions        # ← add
+        return states, lats, timestamps, actions
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  SPAWN HELPERS
 # ══════════════════════════════════════════════════════════════════════════════
-def spawn_enemies(n=20):
+def spawn_enemies(n=30, shared_seed=12345):
+    rng = random.Random(shared_seed + 999)
     enemies=[]
     attempts=0
     while len(enemies)<n and attempts<5000:
         attempts+=1
-        c=random.randint(1,COLS-2); r=random.randint(1,ROWS-2)
+        c=rng.randint(1,COLS-2); r=rng.randint(1,ROWS-2)
         if MAP[r][c]==0:
             x=c*TILE+TILE//2; y=r*TILE+TILE//2
             if math.hypot(x-TILE*3,y-TILE*3)>TILE*8:
                 enemies.append(Enemy(x,y))
     return enemies
 
-def spawn_crates(n=12):
+def spawn_crates(n=12, shared_seed=12345):
+    rng = random.Random(shared_seed + 777)
     crates=[]
     attempts=0
     while len(crates)<n and attempts<5000:
         attempts+=1
-        c=random.randint(1,COLS-2); r=random.randint(1,ROWS-2)
+        c=rng.randint(1,COLS-2); r=rng.randint(1,ROWS-2)
         if MAP[r][c]==0:
             x=c*TILE+TILE//2; y=r*TILE+TILE//2
             if math.hypot(x-TILE*3,y-TILE*3)>TILE*5:
-                wi=random.randint(1,len(WEAPONS)-1)
+                wi=rng.randint(1,len(WEAPONS)-1)
                 crates.append(WeaponCrate(x,y,wi))
     return crates
 
@@ -948,42 +951,50 @@ def spawn_crates(n=12):
 #  MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    global MAP, CUR_TERRAIN
+    global MAP, CUR_TERRAIN, _ground, shake_intensity
 
     args=parse_args()
+    host,port=args.edge.split(":")
+    edge_addr=(host,int(port))
 
-    # Parse edge address
-    # host,port=args.edge.split(":")
-    # edge_addr=(host,int(port))
-
-    # Init map (same seed = same map for all players)
     CUR_TERRAIN=args.terrain
+    random.seed(args.map_seed)
     MAP=gen_map(args.terrain, seed=args.map_seed)
     bake_map()
 
-    # Spread player spawns across map so players don't stack
-    random.seed(args.map_seed + hash(args.client_id))
+    enemies = spawn_enemies(30 if args.ai else 0, shared_seed=args.map_seed)
+    crates = spawn_crates(12, shared_seed=args.map_seed)
+
+    random.seed(args.map_seed + sum(ord(c) for c in args.client_id))
     spawn_x = TILE * random.randint(2,6)
     spawn_y = TILE * random.randint(2,6)
 
-    player=Player(args.color % len(PLAYER_COLORS))
-    player.x=float(spawn_x); player.y=float(spawn_y)
+    player = Player(args.color % len(PLAYER_COLORS))
+    player.x = float(spawn_x); player.y = float(spawn_y)
 
-    enemies=spawn_enemies(20 if args.ai else 0)
-    crates=spawn_crates(12)
-    bullets=[]
-    remote_players={}   # client_id → RemotePlayer
-    color_counter=[args.color+1]
+    bullets = []
+    remote_players = {}
+    color_counter = [args.color+1]
+    remote_player_colors = {}   # FIX: persist colors across reconnects
 
-    # Network
-    main_addr = tuple(args.main.split(":"))
-    main_addr = (main_addr[0], int(main_addr[1]))
-    net=NetworkClient(args.client_id, main_addr, region=args.region)
-    print(f"[warzone] connecting to edge {main_addr} as {args.client_id!r} ...")
-    net.connect()
+    display_ping = 0
+    ping_update_timer = 0.0
+
+    net = NetworkClient(args.client_id, edge_addr, args.region)
+    print(f"[warzone] connecting to edge {edge_addr} as {args.client_id!r} ...")
+    for attempt in range(3):
+        try:
+            net.connect()
+            break
+        except Exception as e:
+            print(f"[net] connect failed ({attempt+1}/3): {e}")
+            _time.sleep(2)
+    else:
+        print("[net] failed to connect after retries")
+        return
     print(f"[warzone] connected.")
 
-    pygame.display.set_caption(f"WARZONE  — {args.client_id} @ {args.main}")
+    pygame.display.set_caption(f"WARZONE  — {args.client_id}")
     pygame.mouse.set_visible(False)
 
     tick=0
@@ -992,17 +1003,22 @@ def main():
     total=len(enemies)
     game_over=False
     victory=False
-    net_tick=0   # send every other frame
+    net_tick=0
 
     scanlines=pygame.Surface((W,H),pygame.SRCALPHA)
-    for y in range(0,H,3):
-        pygame.draw.line(scanlines,(0,0,0,22),(0,y),(W,y))
+    for y in range(0,H,3): pygame.draw.line(scanlines,(0,0,0,22),(0,y),(W,y))
 
     latency_log = []
+    death_slowdown = 1.0
 
     try:
         while True:
-            dt=min(clock.tick(60)/1000.0, 0.05)
+            if not player.alive: death_slowdown = max(0.2, death_slowdown - 0.01)
+            else: death_slowdown = 1.0
+
+            raw_dt = clock.tick(60) / 1000.0
+            dt = min(raw_dt * death_slowdown, 0.05)
+
             fps=clock.get_fps()
             mx,my=pygame.mouse.get_pos()
             keys=pygame.key.get_pressed()
@@ -1022,96 +1038,101 @@ def main():
                                 if c.alive and math.hypot(c.x-player.x,c.y-player.y)<36:
                                     player.give_weapon(c.weapon_idx)
                                     c.alive=False
+                                    c.respawn_timer = 30.0
                                     net.send_state(player,tick,action={"type":"pickup","crate_idx":i})
                                     break
                         for num in range(pygame.K_1,pygame.K_8):
                             if event.key==num: player.switch_weapon(num-pygame.K_1+1)
-                    if game_over and event.key==pygame.K_r:
-                        net.stop(); latency_log.clear(); main(); return
 
-            # ── Local game update ────────────────────────────────────────────────
+                    if game_over and event.key==pygame.K_r:
+                        if not victory:
+                            game_over = False
+                            player.hp = player.MAX_HP
+                            player.alive = True
+                            player.weapons = [(0, WEAPONS[0]["max_ammo"])]
+                            player.cur_weapon = 0
+                            death_slowdown = 1.0
+
+                            for _ in range(100):
+                                cx, cy = random.randint(1, COLS-2), random.randint(1, ROWS-2)
+                                if MAP[cy][cx] == 0:
+                                    player.x = float(cx * TILE + TILE//2)
+                                    player.y = float(cy * TILE + TILE//2)
+                                    break
+                            player.died_x = None
+
+            # ── Local Update ──────────────────────────────────────────────────
             if not game_over:
                 elapsed+=dt; tick+=1
-                player.update(dt,keys,mx,my)
 
-                # Shoot
+                player.update(dt,keys,mx,my)
                 if pygame.mouse.get_pressed()[0]:
                     shots=player.shoot(bullets)
                     if shots: pending_shot=shots[0]
 
-                # AI enemies
                 for e in enemies:
-                    if e.alive: e.update(dt,player,bullets)
+                    if e.alive: e.update(dt, player, bullets, remote_players)
+
                 for c in crates:
-                    if c.alive: c.update()
+                    c.update(dt)
+
                 for b in bullets:
                     b.update()
 
-                # Bullet ↔ local player (from enemy/remote bullets)
+                # Bullet hitting the local player
                 for b in bullets[:]:
                     if b.alive and b.owner_id not in ("local", args.client_id):
                         if math.hypot(b.x-player.x,b.y-player.y)<player.RADIUS+3:
                             player.take_hit(b.damage); b.alive=False
                             if not player.alive: game_over=True
 
-                # Bullet ↔ enemies (local bullets only)
+                # Bullet hitting an enemy
                 for b in bullets[:]:
-                    if b.alive and b.owner_id=="local":
+                    if b.alive:
                         for e in enemies:
                             if e.alive and math.hypot(b.x-e.x,b.y-e.y)<e.RADIUS+b.b_size:
-                                e.take_hit(b.damage)
-                                if b.special=="pierce":
-                                    b.pierced+=1
-                                    if b.pierced>=3: b.alive=False
-                                elif b.special=="explode":
-                                    b.alive=False; spawn_explosion(b.x,b.y)
-                                    for e2 in enemies:
-                                        if e2.alive and e2 is not e and math.hypot(b.x-e2.x,b.y-e2.y)<70:
-                                            e2.take_hit(b.damage//2)
-                                            if not e2.alive: kills+=1
-                                elif b.special!="rail":
-                                    b.alive=False
-                                if not e.alive: kills+=1
-                                if b.special not in ("pierce","rail"): break
+                                if b.special not in ("pierce", "rail", "explode"):
+                                    spawn_blood(b.x, b.y, 5)
+                                    b.alive = False
 
-                # Bullet ↔ remote players (local bullets → remote player hit)
-                for b in bullets[:]:
-                    if b.alive and b.owner_id=="local":
-                        for rp in remote_players.values():
-                            if rp.alive and math.hypot(b.x-rp.x,b.y-rp.y)<rp.RADIUS+b.b_size:
-                                # Send hit notification — remote client applies damage
-                                net.send_state(player,tick,action={
-                                    "type":"hit","target_id":rp.client_id,"damage":b.damage})
-                                spawn_blood(b.x,b.y,5)
-                                if b.special not in ("pierce","rail"): b.alive=False
-                                break
+                                e.take_hit(b.damage)
+                                if not e.alive and b.owner_id == "local": kills += 1
+
+                                if b.special == "pierce":
+                                    b.pierced += 1
+                                    if b.pierced >= 3: b.alive = False
+                                elif b.special == "explode":
+                                    b.alive = False
+                                    spawn_explosion(b.x, b.y)
+                                    for e2 in enemies:
+                                        if e2.alive and e2 is not e and math.hypot(b.x-e2.x, b.y-e2.y) < 70:
+                                            e2.take_hit(b.damage // 2)
+                                            if not e2.alive and b.owner_id == "local": kills += 1
+
+                                if b.special not in ("pierce", "rail"): break
 
                 bullets=[b for b in bullets if b.alive]
-
                 if kills>=total and total>0: game_over=True; victory=True
 
-                # ── Network: apply remote states ─────────────────────────────────
+                # ── Network Processing ───────────────────────────────────────────
                 states,lats,timestamps,actions=net.drain_states()
 
-                # Update remote player objects
+                # FIX: use persistent color map so colors don't change on reconnect
                 for cid, payload in states.items():
                     if cid not in remote_players:
-                        ci = color_counter[0] % len(PLAYER_COLORS)
-                        color_counter[0] += 1
-                        remote_players[cid] = RemotePlayer(cid, ci)
+                        if cid not in remote_player_colors:
+                            remote_player_colors[cid] = color_counter[0] % len(PLAYER_COLORS)
+                            color_counter[0] += 1
+                        remote_players[cid] = RemotePlayer(cid, remote_player_colors[cid])
                     remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
 
-                # Apply incoming actions
                 for entry in actions:
                     src=entry["source_id"]; act=entry["action"]
                     atype=act.get("type")
 
                     if atype=="shoot":
-                        # Spawn remote bullet locally
-                        bx=float(act.get("bx",0)); by=float(act.get("by",0))
-                        angle=float(act.get("angle",0))
-                        widx=int(act.get("weapon_idx",0))
-                        seed=int(act.get("spread_seed",0))
+                        bx, by, angle = float(act.get("bx",0)), float(act.get("by",0)), float(act.get("angle",0))
+                        widx, seed = int(act.get("weapon_idx",0)), int(act.get("spread_seed",0))
                         w=WEAPONS[widx]
                         rng=random.Random(seed)
                         for _ in range(w["count"]):
@@ -1120,35 +1141,43 @@ def main():
                         spawn_flash(bx,by,angle)
 
                     elif atype=="hit" and act.get("target_id")==args.client_id:
-                        # We were hit
                         player.take_hit(int(act.get("damage",0)))
                         if not player.alive: game_over=True
 
                     elif atype=="pickup":
                         idx=int(act.get("crate_idx",-1))
-                        if 0<=idx<len(crates): crates[idx].alive=False
+                        if 0<=idx<len(crates):
+                            crates[idx].alive=False
+                            crates[idx].respawn_timer = 30.0
 
-                # Send our state every 2nd frame (~30Hz)
                 net_tick+=1
                 if net_tick%2==0:
-                    action=pending_shot  # may be None
-                    if not player.alive and net_tick%60==0:
-                        action={"type":"dead"}
-                    net.send_state(player,tick,action=action)
+                    action = pending_shot
+                    if not player.alive and net_tick%60==0: action={"type":"dead"}
+                    net.send_state(player, tick, action=action)
 
-                # Remove stale remote players (no update in 5s = disconnected)
                 now=_time.time()
+                # FIX: dead players stay visible for 30s, alive players pruned at 5s
                 for cid in list(remote_players.keys()):
-                    if now-remote_players[cid].last_seen>5.0:
+                    rp = remote_players[cid]
+                    timeout = 30.0 if not rp.alive else 5.0
+                    if now - rp.last_seen > timeout:
                         del remote_players[cid]
 
                 update_particles()
-                if player.alive:
-                    update_cam(player.x,player.y)
-                elif player.died_x is not None:
-                    update_cam(player.died_x,player.died_y)
 
-            # ── DRAW ────────────────────────────────────────────────────────────
+            # ── Camera & Shake ──────────────────────────────────────────────────
+            if player.alive:
+                update_cam(player.x,player.y)
+            elif player.died_x is not None:
+                update_cam(player.died_x,player.died_y)
+
+            if shake_intensity > 0:
+                cam.x += random.uniform(-shake_intensity, shake_intensity)
+                cam.y += random.uniform(-shake_intensity, shake_intensity)
+                shake_intensity *= 0.9
+
+            # ── Draw ────────────────────────────────────────────────────────────
             t=TERRAINS[CUR_TERRAIN]
             screen.fill(t["bg"])
             draw_map(screen,cam.x,cam.y)
@@ -1161,9 +1190,7 @@ def main():
                 if e.alive and math.hypot(e.x-player.x,e.y-player.y)<FOG_R+30:
                     e.draw(screen)
 
-            # Draw remote players (always visible — no fog on other humans)
-            for rp in remote_players.values():
-                rp.draw(screen)
+            for rp in remote_players.values(): rp.draw(screen)
 
             if player.alive:
                 player.draw(screen)
@@ -1174,17 +1201,28 @@ def main():
                     pygame.draw.circle(screen,(80,20,20),(int(sx),int(sy)),r)
                     pygame.draw.line(screen,(160,40,40),(int(sx)-r+4,int(sy)-r+4),(int(sx)+r-4,int(sy)+r-4),3)
                     pygame.draw.line(screen,(160,40,40),(int(sx)+r-4,int(sy)-r+4),(int(sx)-r+4,int(sy)+r-4),3)
+
             if player.hurt_flash>0 and player.alive:
                 t2=player.hurt_flash/0.18
                 tint=pygame.Surface((W,H),pygame.SRCALPHA)
                 tint.fill((180,0,0,int(60*t2))); screen.blit(tint,(0,0))
 
+            if not player.alive:
+                red_alpha = int((1.0 - death_slowdown) * 150)
+                death_overlay = pygame.Surface((W, H), pygame.SRCALPHA)
+                death_overlay.fill((120, 0, 0, red_alpha))
+                screen.blit(death_overlay, (0, 0))
+
             draw_fog(player)
             screen.blit(scanlines,(0,0))
-            draw_hud(player,fps,kills,total,elapsed,remote_players,net.ping_ms)
+            draw_hud(player, fps, kills, total, elapsed, remote_players, display_ping)
 
-            # Crate pickup prompt
             if not game_over:
+                ping_update_timer += dt
+                if ping_update_timer >= 1.0:
+                    display_ping = net.ping_ms
+                    ping_update_timer = 0.0
+
                 for c in crates:
                     if c.alive and math.hypot(c.x-player.x,c.y-player.y)<50:
                         sx2,sy2=ws(c.x,c.y)
@@ -1198,14 +1236,13 @@ def main():
                 sub=f"TIME: {int(elapsed)}s   KILLS: {kills}/{total}" if victory else "KILLED IN ACTION"
                 col=HUD_G if victory else HUD_R
                 t1=fnt_xl.render(msg,True,col); t2=fnt_m.render(sub,True,HUD_W)
-                t3=fnt_s.render("[R] RESTART  |  [ESC] QUIT",True,(120,140,120))
+                t3=fnt_s.render("[R] RESPAWN  |  [ESC] QUIT",True,(120,140,120))
                 screen.blit(t1,(W//2-t1.get_width()//2,H//2-70))
                 screen.blit(t2,(W//2-t2.get_width()//2,H//2+10))
                 screen.blit(t3,(W//2-t3.get_width()//2,H//2+52))
 
             pygame.display.flip()
 
-            # Record latency data for this tick
             record = {"timestamp": _time.time(), "tick": tick}
             for cid, rp in remote_players.items():
                 record[cid] = rp.latency_ms
@@ -1215,11 +1252,9 @@ def main():
         if latency_log:
             os.makedirs("logs", exist_ok=True)
             df = pd.DataFrame(latency_log)
-            # Ensure timestamp and tick are the first columns
             cols = ["timestamp", "tick"] + [c for c in df.columns if c not in ["timestamp", "tick"]]
             df = df[cols]
             df.to_csv(f"logs/{args.client_id}.csv", index=False)
-
 
 if __name__ == "__main__":
     try:
