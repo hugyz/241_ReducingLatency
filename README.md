@@ -174,13 +174,15 @@ the procedurally generated map layout.
 
 ### Client arguments
 
-  --client-id   Unique player identifier. Examples: p1, alice
-  --main        Main server address for discovery. Example: 127.0.0.1:8000
-  --region      Client region (must match a key in config.json). Example: A, B, Perth
-  --color       Player colour index 0-8 (see table below)
-  --map-seed    Shared map seed -- must be the same for all players
-  --terrain     Map terrain type: forest, desert, urban, snow, volcano
-  --ai          Flag. Enables AI enemies.
+|               |                                                                 |
+|---------------|-----------------------------------------------------------------|
+| --client-id   | Unique player identifier (e.g., p1, alice)                     |
+| --main        | Main server address for discovery (e.g., 127.0.0.1:8000)       |
+| --region      | Client region (must match a key in config.json, e.g., A, B, Perth) |
+| --color       | Player colour index 0–8 (see table below)                      |
+| --map-seed    | Shared map seed (must be the same for all players)             |
+| --terrain     | Map terrain type (forest, desert, urban, snow, volcano)        |
+| --ai          | Flag to enable AI enemies                                      |
 
 ### Colour index reference
 
@@ -403,35 +405,38 @@ different values for A->B vs B->A.
 
 ## Controls
 
-  W A S D       Move
-  Mouse         Aim
-  Left click    Shoot
-  R             Reload
-  1 - 7         Switch weapon slot
-  E             Pick up weapon crate
-  ESC           Quit
+| Control      | Action              |
+|-------------|---------------------|
+| W / A / S / D | Move               |
+| Mouse        | Aim                |
+| Left Click   | Shoot              |
+| R            | Reload             |
+| 1 – 7        | Switch weapon slot |
+| E            | Pick up weapon crate |
+| ESC          | Quit               |
 
 ---
 
 ## Weapons Reference
 
-  Slot 1  PISTOL           damage 12   fire rate 0.25s  ammo unlimited
-  Slot 2  SMG              damage 10   fire rate 0.07s  ammo 45
-  Slot 3  SHOTGUN          damage 8x7  fire rate 0.55s  ammo 16
-  Slot 4  RIFLE            damage 35   fire rate 0.35s  ammo 20   piercing
-  Slot 5  FLAMETHROWER     damage 5    fire rate 0.04s  ammo 100  flame
-  Slot 6  GRENADE LAUNCHER damage 50   fire rate 0.80s  ammo 10   explosion
-  Slot 7  RAILGUN          damage 100  fire rate 1.20s  ammo 5    instant
-
+  | Slot | Weapon            | Damage | Fire Rate | Ammo       | Special      |
+|------|------------------|--------|-----------|------------|--------------|
+| 1    | Pistol           | 12     | 0.25s     | Unlimited  | —            |
+| 2    | SMG              | 10     | 0.07s     | 45         | —            |
+| 3    | Shotgun          | 8×7    | 0.55s     | 16         | —            |
+| 4    | Rifle            | 35     | 0.35s     | 20         | Piercing     |
+| 5    | Flamethrower     | 5      | 0.04s     | 100        | Flame        |
+| 6    | Grenade Launcher | 50     | 0.80s     | 10         | Explosion    |
+| 7    | Railgun          | 100    | 1.20s     | 5          | Instant      |
 ---
 
 ## Terrains
 
-  forest    Dense woodland -- tight corridors
-  desert    Open sands -- long sightlines
-  urban     City ruins -- lots of cover
-  snow      Frozen tundra -- reduced fog
-  volcano   Lava fields -- narrow paths
+forest    Dense woodland — tight corridors  
+desert    Open sands — long sightlines  
+urban     City ruins — lots of cover  
+snow      Frozen tundra — reduced fog  
+volcano   Lava fields — narrow paths  
 
 ---
 
