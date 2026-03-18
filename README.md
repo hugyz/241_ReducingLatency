@@ -371,6 +371,16 @@ python plot_latency.py
 
 Pass any of these into `plot_metric_across_folder()` to control how aggregate latency is computed across the full `logs/` folder.
 
+#### Note: Latency display throttle in `arena_game.py`
+
+`arena_game.py` includes a throttle on the ping display shown above each player's head:
+
+```python
+if now - self._latency_last_update >= 1.0:
+```
+
+This prevents the value from flickering rapidly during play. However, it also means the displayed ping is only updated once per second rather than every frame. **If you are collecting latency data for testing or analysis, comment this condition out** so that latency is recorded and updated every frame without throttling.
+
 ---
 
 ## Reference
