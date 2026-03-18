@@ -1,6 +1,6 @@
 #!/bin/bash
 
-EDGE=192.168.1.74:62214
+MAIN=192.168.1.74:62214
 DURATION=30
 
 # Number of clients (default = 8)
@@ -19,7 +19,7 @@ for ((i=1;i<=NUM_CLIENTS;i++)); do
 
   python3 arena_game.py \
     --client-id p$i \
-    --edge $EDGE \
+    --main $MAIN \
     --region $REGION \
     --color $COLOR &
 done

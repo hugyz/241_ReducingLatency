@@ -28,7 +28,7 @@ except ImportError:
 def parse_args():
     ap = argparse.ArgumentParser(description="WARZONE multiplayer client")
     ap.add_argument("--client-id", default="p1",          help="unique player id")
-    ap.add_argument("--edge",      default="127.0.0.1:8000", help="server host:port")
+    ap.add_argument("--main",      default="127.0.0.1:8000", help="server host:port")
     ap.add_argument("--color",     type=int, default=0,   help="player color index 0-8")
     ap.add_argument("--region",    default="A",           help=argparse.SUPPRESS)
     ap.add_argument("--map-seed",  type=int, default=12345, help=argparse.SUPPRESS)
@@ -786,13 +786,13 @@ def draw_hud(player, fps, kills, total, elapsed, remote_players, net_latency_ms)
 #  NETWORK CLIENT
 # ══════════════════════════════════════════════════════════════════════════════
 class NetworkClient:
-    def __init__(self, client_id, edge_addr, region):
+    def __init__(self, client_id, main_addr, region):
         self.client_id  = client_id
-        self.edge_addr  = edge_addr
-        self.edge_name  = "main"
+        self.main_addr  = main_addr
+        self.main_name  = "main"
         self.region     = region
         self.transport  = UdpTransport(bind_port=0)
-        self.server     = edge_addr
+        self.server     = main_addr
         self._seq       = 0
         self._seq_lock  = threading.Lock()
         self._running   = False
@@ -838,9 +838,9 @@ class NetworkClient:
         self.server = best_result.addr
         for c in candidates:
             if c["addr"] == self.server:
-                self.edge_name = c["name"]; break
+                self.main_name = c["name"]; break
 
-        print(f"[net] selected endpoint {self.edge_name} @ {self.server}")
+        print(f"[net] selected endpoint {self.main_name} @ {self.server}")
         self._send_register()
         t = threading.Thread(target=self._ping_loop, daemon=True)
         t.start()
@@ -848,7 +848,7 @@ class NetworkClient:
     def _send_discover(self):
         seq = self._next_seq()
         msg = create_message(MessageType.DISCOVER.value, self.client_id, seq, payload={"region": self.region})
-        self.transport.send(msg, self.edge_addr)
+        self.transport.send(msg, self.main_addr)
     
     def _on_edge_list(self, msg, addr):
         self._edges = msg.get("payload", {}).get("edges", [])
@@ -857,7 +857,7 @@ class NetworkClient:
     def _send_register(self):
         seq = self._next_seq()
         reg = create_message(MessageType.REGISTER.value, self.client_id, seq, payload={
-            "region": self.region, "registered_edge": self.edge_name, "registered_edge_addr": f"{self.server[0]}:{self.server[1]}"
+            "region": self.region, "registered_edge": self.main_name, "registered_edge_addr": f"{self.server[0]}:{self.server[1]}"
         })
         self.transport.send(reg, self.server)
         
@@ -957,9 +957,9 @@ def spawn_crates(n=12, shared_seed=12345):
 def main():
     global MAP, CUR_TERRAIN, _ground, shake_intensity
 
-    args=parse_args()
-    host,port=args.edge.split(":")
-    edge_addr=(host,int(port))
+    args = parse_args()
+    host, port = args.main.split(":")
+    main_addr = (host, int(port))
 
     CUR_TERRAIN=args.terrain
     random.seed(args.map_seed)
@@ -984,8 +984,8 @@ def main():
     display_ping = 0
     ping_update_timer = 0.0
 
-    net = NetworkClient(args.client_id, edge_addr, args.region)
-    print(f"[warzone] connecting to edge {edge_addr} as {args.client_id!r} ...")
+    net = NetworkClient(args.client_id, main_addr, args.region)
+    print(f"[warzone] connecting to {main_addr} as {args.client_id!r} ...")
     for attempt in range(3):
         try:
             net.connect()
@@ -1118,57 +1118,57 @@ def main():
                 bullets=[b for b in bullets if b.alive]
                 if kills>=total and total>0: game_over=True; victory=True
 
-                # ── Network Processing ───────────────────────────────────────────
-                states,lats,timestamps,actions=net.drain_states()
-
-                # FIX: use persistent color map so colors don't change on reconnect
-                for cid, payload in states.items():
-                    if cid not in remote_players:
-                        if cid not in remote_player_colors:
-                            remote_player_colors[cid] = color_counter[0] % len(PLAYER_COLORS)
-                            color_counter[0] += 1
-                        remote_players[cid] = RemotePlayer(cid, remote_player_colors[cid])
-                    remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
-
-                for entry in actions:
-                    src=entry["source_id"]; act=entry["action"]
-                    atype=act.get("type")
-
-                    if atype=="shoot":
-                        bx, by, angle = float(act.get("bx",0)), float(act.get("by",0)), float(act.get("angle",0))
-                        widx, seed = int(act.get("weapon_idx",0)), int(act.get("spread_seed",0))
-                        w=WEAPONS[widx]
-                        rng=random.Random(seed)
-                        for _ in range(w["count"]):
-                            spread=rng.uniform(-w["spread"],w["spread"])
-                            bullets.append(Bullet(bx,by,angle+spread,src,w,is_local=False))
-                        spawn_flash(bx,by,angle)
-
-                    elif atype=="hit" and act.get("target_id")==args.client_id:
-                        player.take_hit(int(act.get("damage",0)))
-                        if not player.alive: game_over=True
-
-                    elif atype=="pickup":
-                        idx=int(act.get("crate_idx",-1))
-                        if 0<=idx<len(crates):
-                            crates[idx].alive=False
-                            crates[idx].respawn_timer = 30.0
-
-                net_tick+=1
-                if net_tick%2==0:
-                    action = pending_shot
-                    if not player.alive and net_tick%60==0: action={"type":"dead"}
-                    net.send_state(player, tick, action=action)
-
-                now=_time.time()
-                # FIX: dead players stay visible for 30s, alive players pruned at 5s
-                for cid in list(remote_players.keys()):
-                    rp = remote_players[cid]
-                    timeout = 30.0 if not rp.alive else 5.0
-                    if now - rp.last_seen > timeout:
-                        del remote_players[cid]
-
                 update_particles()
+
+            # ── Network Processing (always runs, even when game_over) ────────────
+            states,lats,timestamps,actions=net.drain_states()
+
+            # FIX: use persistent color map so colors don't change on reconnect
+            for cid, payload in states.items():
+                if cid not in remote_players:
+                    if cid not in remote_player_colors:
+                        remote_player_colors[cid] = color_counter[0] % len(PLAYER_COLORS)
+                        color_counter[0] += 1
+                    remote_players[cid] = RemotePlayer(cid, remote_player_colors[cid])
+                remote_players[cid].apply_state(payload, lats.get(cid, 0), timestamps.get(cid, 0))
+
+            for entry in actions:
+                src=entry["source_id"]; act=entry["action"]
+                atype=act.get("type")
+
+                if atype=="shoot" and not game_over:
+                    bx, by, angle = float(act.get("bx",0)), float(act.get("by",0)), float(act.get("angle",0))
+                    widx, seed = int(act.get("weapon_idx",0)), int(act.get("spread_seed",0))
+                    w=WEAPONS[widx]
+                    rng=random.Random(seed)
+                    for _ in range(w["count"]):
+                        spread=rng.uniform(-w["spread"],w["spread"])
+                        bullets.append(Bullet(bx,by,angle+spread,src,w,is_local=False))
+                    spawn_flash(bx,by,angle)
+
+                elif atype=="hit" and act.get("target_id")==args.client_id and not game_over:
+                    player.take_hit(int(act.get("damage",0)))
+                    if not player.alive: game_over=True
+
+                elif atype=="pickup":
+                    idx=int(act.get("crate_idx",-1))
+                    if 0<=idx<len(crates):
+                        crates[idx].alive=False
+                        crates[idx].respawn_timer = 30.0
+
+            net_tick+=1
+            if net_tick%2==0:
+                action = pending_shot
+                if not player.alive and net_tick%60==0: action={"type":"dead"}
+                net.send_state(player, tick, action=action)
+
+            now=_time.time()
+            # FIX: dead players stay visible for 30s, alive players pruned at 5s
+            for cid in list(remote_players.keys()):
+                rp = remote_players[cid]
+                timeout = 30.0 if not rp.alive else 5.0
+                if now - rp.last_seen > timeout:
+                    del remote_players[cid]
 
             # ── Camera & Shake ──────────────────────────────────────────────────
             if player.alive:

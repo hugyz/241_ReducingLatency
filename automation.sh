@@ -5,7 +5,6 @@
 
 CLIENT_PIDS=()
 EDGE_PIDS=()
-EDGE_ADDRS=()
 EDGE_ACTUAL_ADDRS=()
 MAIN_PID=""
 MAIN_LOG=""
@@ -30,7 +29,7 @@ cleanup() {
     taskkill //F //IM "edge-server.exe" 2>/dev/null &
     wait
     # Port-based cleanup
-    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "${EDGE_ADDRS[@]}" "$MAIN_ADDR"; do
+    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "$MAIN_ADDR"; do
       [ -z "$addr" ] && continue
       p="${addr##*:}"
       netstat -ano 2>/dev/null | grep ":${p}[^0-9]" | awk '{print $5}' | tr -d '\r' | sort -u | while read pid; do
@@ -46,7 +45,7 @@ cleanup() {
     pkill -9 -f "main-server" 2>/dev/null
     pkill -9 -f "edge-server" 2>/dev/null
     # Port-based cleanup
-    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "${EDGE_ADDRS[@]}" "$MAIN_ADDR"; do
+    for addr in "${EDGE_ACTUAL_ADDRS[@]}" "$MAIN_ADDR"; do
       [ -z "$addr" ] && continue
       p="${addr##*:}"
       lsof -ti ":$p" 2>/dev/null | xargs -r kill -9 2>/dev/null
@@ -201,7 +200,7 @@ for ((i=1; i<=NUM_CLIENTS; i++)); do
   SERVER=${SERVER_POOL[$SERVER_IDX]}
   LOC=${SERVER_LOCS[$SERVER_IDX]}
 
-  ARGS=(--client-id "p$i" --edge "$SERVER")
+  ARGS=(--client-id "p$i" --main "$SERVER")
 
   if $USE_COLOR; then
     ARGS+=(--color $(( RANDOM % 9 )))
